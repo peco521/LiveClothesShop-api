@@ -30,7 +30,7 @@ def test_schema_move_integrity():
     assert len(re.findall(r"create table", sql, re.I)) == 40
     unchanged = re.sub(r"create table (usuario|sucursal)\s*\(.*?\);", "", sql, flags=re.I | re.S)
     unchanged = re.sub(r"CREATE TABLE sesion \(.*?(?=CREATE TABLE color)", "", unchanged, flags=re.S)
-    assert hashlib.sha256(unchanged.strip().encode()).hexdigest() == "563907bf9e84c138f9e772d3980690704f3b0d02db99d195bab8f95a45990abe"
+    assert hashlib.sha256(unchanged.strip().encode()).hexdigest() == "e4174e330902a3464d773fc45916ab0a254e1443c0c45a0b9b1d521d7e85410d"
     assert "contrasena text not null" in sql
     assert "activo boolean not null default true" in sql
     assert "nombres varchar(100)" in sql

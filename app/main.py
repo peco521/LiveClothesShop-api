@@ -14,9 +14,18 @@ from app.modules.seguridad_accesos.cu06_roles_permisos.routers.rol import router
 from app.modules.seguridad_accesos.cu07_clientes.routers.cliente import router as cu07_router
 from app.modules.seguridad_accesos.cu08_bitacora.routers.bitacora import router as cu08_router
 from app.modules.seguridad_accesos.cu09_sucursales_ciudades.routers.organizacion import router as cu09_router
+from app.modules.cliente_experiencia_compra.cu10_consultar_prendas.routers.catalogo import router as cu10_router
+from app.modules.cliente_experiencia_compra.cu11_gestionar_reserva.routers.reserva import router as cu11_router
+from app.modules.cliente_experiencia_compra.cu11_gestionar_reserva.routers.sucursales import router as cu11_sucursales_router
+from app.modules.cliente_experiencia_compra.cu12_carrito.routers.carrito import router as cu12_router
+from app.modules.cliente_experiencia_compra.cu13_compra_digital.routers.compra import router as cu13_router
+from app.modules.cliente_experiencia_compra.cu14_pago_electronico.routers.pago import router as cu14_router
+from app.integrations.payments.mock import PasarelaMock
+from app.integrations.payments.protocolo import PasarelaPagos
 
 
-def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryDelivery | None = None):
+def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryDelivery | None = None,
+               pasarela: PasarelaPagos | None = None):
     @asynccontextmanager
     async def lifespan(application):
         try:
@@ -28,6 +37,8 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
         application.state.passwords = Passwords()
         # Explicit composition only. No implicit console/file/dev token delivery.
         application.state.recovery_delivery = recovery_delivery
+        # Pasarela de pago mock por defecto; inyectable en tests. Sin pasarelas reales.
+        application.state.pasarela = pasarela if pasarela is not None else PasarelaMock()
         engine = None
         if session_factory is None:
             engine, factory = create_database(config.database_url.get_secret_value())
@@ -56,8 +67,14 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
         is_cu08 = request.url.path == "/api/admin/bitacora" or request.url.path.startswith("/api/admin/bitacora/")
         is_cu09 = any(request.url.path == prefix or request.url.path.startswith(prefix + "/")
                       for prefix in ("/api/admin/ciudades", "/api/admin/sucursales"))
-        protected = is_auth or is_cu05 or is_cu06 or is_cu07 or is_cu08 or is_cu09
-        if protected and request.method not in {"GET", "HEAD", "OPTIONS"}:
+        is_catalogo = request.url.path == "/api/catalogo" or request.url.path.startswith("/api/catalogo/")
+        is_cliente = request.url.path == "/api/cliente" or request.url.path.startswith("/api/cliente/")
+        protected = is_auth or is_cu05 or is_cu06 or is_cu07 or is_cu08 or is_cu09 or is_catalogo or is_cliente
+        # Nativo móvil: Authorization Bearer sin cookie no usa defensa CSRF de
+        # cookie (el token no se adjunta automáticamente). Con cookie presente
+        # se mantiene Origin + cabecera; cookie+bearer se rechaza en dependencias.
+        bearer_only = bool(request.headers.get("authorization")) and not request.cookies.get(config.cookie_name)
+        if protected and request.method not in {"GET", "HEAD", "OPTIONS"} and not bearer_only:
             # Custom-header CSRF defense plus exact Origin allowlist, including
             # login CSRF. Cross-origin scripts require a successful preflight.
             if origin not in config.allowed_origins or request.headers.get("x-csrf-protection") != "1":
@@ -69,6 +86,7 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
             response.headers["Access-Control-Allow-Methods"] = (
                 "GET, OPTIONS" if is_cu08 else
                 "GET, POST, PATCH, PUT, OPTIONS" if is_cu06 else
+                "GET, POST, PATCH, DELETE, OPTIONS" if is_cliente else
                 "GET, POST, PATCH, OPTIONS" if is_cu05 or is_cu09 else
                 "GET, PATCH, OPTIONS" if is_cu07 else "GET, POST, OPTIONS")
             response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-CSRF-Protection, Authorization"
@@ -102,6 +120,12 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
     application.include_router(cu07_router)
     application.include_router(cu08_router)
     application.include_router(cu09_router)
+    application.include_router(cu10_router)
+    application.include_router(cu11_router)
+    application.include_router(cu11_sucursales_router)
+    application.include_router(cu12_router)
+    application.include_router(cu13_router)
+    application.include_router(cu14_router)
     return application
 
 

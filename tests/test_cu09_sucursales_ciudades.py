@@ -392,6 +392,9 @@ def test_29_dependents_unchanged(client, branch, factory, operator):
             ddl = re.sub(fk_pattern, "", ddl, flags=re.I)
             ddl = ddl[:-2] + "".join(fks) + ");"
             ddl = re.sub(r"default now\(\)", "default CURRENT_TIMESTAMP", ddl, flags=re.I)
+            # CU10 registra talla/promocion/categoria/marca/coleccion/proveedor/
+            # producto/varianteProd/inventario en Base.metadata; no recrearlas.
+            ddl = re.sub(r"create table", "create table if not exists", ddl, count=1, flags=re.I)
             db.execute(text(ddl))
         db.execute(text("INSERT INTO talla VALUES (1, 'M')"))
         db.execute(text("INSERT INTO categoria VALUES (1, 'Prueba')"))

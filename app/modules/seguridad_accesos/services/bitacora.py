@@ -22,8 +22,12 @@ def record_role(db, action: Literal["rol_creado", "rol_actualizado", "permisos_r
 
 def record(db, action: Literal["cliente_registrado", "login_correcto", "login_rechazado", "logout_correcto", "recuperacion_solicitada", "contrasena_restablecida",
                               "usuario_creado", "empleado_creado", "usuario_actualizado", "empleado_actualizado", "usuario_activado", "usuario_desactivado",
-                              "cliente_actualizado", "cliente_activado", "cliente_desactivado",
-                              "ciudad_creada", "ciudad_actualizada", "sucursal_creada", "sucursal_actualizada", "sucursal_estado_actualizado"],
+                               "cliente_actualizado", "cliente_activado", "cliente_desactivado",
+                               "ciudad_creada", "ciudad_actualizada", "sucursal_creada", "sucursal_actualizada", "sucursal_estado_actualizado",
+                               "reserva_creada", "reserva_cancelada", "reserva_vencida",
+                               "carrito_item_agregado", "carrito_item_actualizado", "carrito_item_eliminado",
+                               "venta_registrada", "pago_iniciado", "pago_aprobado", "pago_rechazado",
+                               "venta_anulada"],
            user_id: str | None, peer: str | None, success: bool):
     try:
         ip = str(ip_address(peer)) if peer else None

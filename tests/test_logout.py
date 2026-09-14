@@ -102,6 +102,13 @@ def test_logout_csrf_does_not_revoke(client, factory, registered, credentials, s
     else:
         client.headers[header] = "https://evil.example" if header == "Origin" else "0"
     result = client.post("/api/auth/logout")
+    if transport == "bearer":
+        # Política móvil: Bearer nativo sin cookie no usa defensa CSRF de
+        # cookie (el token no es ambient); Origin ausente/maligno se ignora y
+        # la sesión se revoca normalmente.
+        assert result.status_code == 204
+        assert client.get("/api/auth/me").status_code == 401
+        return
     assert result.status_code == 403
     assert "set-cookie" not in result.headers
     assert client.get("/api/auth/me").status_code == 200
