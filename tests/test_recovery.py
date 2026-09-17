@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from app.core.security import digest, utcnow
-from app.modules.seguridad_accesos.models import Bitacora, RecuperacionContrasena, Sesion, Usuario
+from app.modules.seguridad_accesos.models import Bitacora, RecuperacionContrasena, Usuario
 from app.modules.seguridad_accesos.services import auth
 
 
@@ -42,13 +42,11 @@ def reset(client, token, password=NEW_PASSWORD):
 def test_indistinguishable(client, registered, delivery, registration, factory):
     existing = client.post(REQUEST, json={"correo": registration["correo"]})
     absent = client.post(REQUEST, json={"correo": "absent@example.com"})
-    with factory.begin() as db:
-        db.get(Usuario, registered["idUsuario"]).activo = False
-    inactive = client.post(REQUEST, json={"correo": registration["correo"]})
-    assert existing.status_code == absent.status_code == inactive.status_code == 202
-    assert existing.json() == absent.json() == inactive.json()
-    assert len(delivery.calls) == 3
-    assert delivery.calls[1][0] is delivery.calls[2][0] is None
+    assert existing.status_code == absent.status_code == 202
+    assert existing.json() == absent.json()
+    assert len(delivery.calls) == 2
+    assert delivery.calls[0][0] == registration["correo"]
+    assert delivery.calls[1][0] is None
     assert "set-cookie" not in existing.headers
 
 
@@ -94,32 +92,29 @@ def test_weak_password_does_not_consume(client, token, factory, password):
         assert db.scalar(select(RecuperacionContrasena)).utilizada_en is None
 
 
-def test_all_sessions_revoked(client, token, credentials, factory):
+def test_all_sessions_revoked(client, token, credentials, factory, settings):
+    accesses = []
     for _ in range(3):
         assert client.post("/api/auth/login", json=credentials).status_code == 200
-    with factory.begin() as db:
-        expired = db.scalar(select(Sesion).order_by(Sesion.id))
-        expired.creada_en = utcnow() - timedelta(days=2)
-        expired.expira_en = utcnow() - timedelta(days=1)
+        accesses.append(client.cookies.get(settings.cookie_name))
+    assert len(set(accesses)) == 3
     assert reset(client, token).status_code == 200
-    with factory() as db:
-        sessions = list(db.scalars(select(Sesion)))
-        assert len(sessions) == 3
-        assert all(session.revocada_en is not None for session in sessions)
     assert client.get("/api/auth/me").status_code == 401
+    client.cookies.clear()
+    for access in accesses:
+        assert client.get("/api/auth/me", headers={"Authorization": f"Bearer {access}"}).status_code == 401
     assert client.post("/api/auth/login", json=credentials).status_code == 401
     assert client.post("/api/auth/login", json=credentials | {"contrasena": NEW_PASSWORD}).status_code == 200
 
 
-def test_inactive_cannot_reset(client, token, factory, registered):
-    with factory.begin() as db:
-        user = db.get(Usuario, registered["idUsuario"])
-        previous = user.contrasena
-        user.activo = False
+def test_missing_account_cannot_reset(client, token, factory, registered, monkeypatch):
+    with factory() as db:
+        previous = db.get(Usuario, registered["idUsuario"]).contrasena
+    monkeypatch.setattr(auth.usuario, "locked", lambda *args: None)
     assert reset(client, token).status_code == 400
     with factory() as db:
-        user = db.get(Usuario, registered["idUsuario"])
-        assert not user.activo and user.contrasena == previous
+        assert db.get(Usuario, registered["idUsuario"]).contrasena == previous
+        assert db.scalar(select(RecuperacionContrasena)).utilizada_en is None
 
 
 def test_rollback(client, token, factory, registered, credentials, monkeypatch):
@@ -135,7 +130,7 @@ def test_rollback(client, token, factory, registered, credentials, monkeypatch):
     with factory() as db:
         assert db.get(Usuario, registered["idUsuario"]).contrasena == previous
         assert db.scalar(select(RecuperacionContrasena)).utilizada_en is None
-        assert db.scalar(select(Sesion)).revocada_en is None
+    assert client.get("/api/auth/me").status_code == 200
 
 
 def test_audit_no_credentials(client, token, factory, registration, caplog):
@@ -203,14 +198,13 @@ def test_request_does_not_change_password_or_create_session(client, registered, 
     assert client.post(REQUEST, json={"correo": registration["correo"]}).status_code == 202
     with factory() as db:
         assert db.get(Usuario, registered["idUsuario"]).contrasena == previous
-        assert db.scalar(select(Sesion)) is None
+        assert not client.app.state.access_tokens._entries
 
 
-def test_inactive_and_unknown_never_issue(client, registered, delivery, registration, factory):
-    with factory.begin() as db:
-        db.get(Usuario, registered["idUsuario"]).activo = False
-    for email in [registration["correo"], "absent@example.com"]:
+def test_unknown_accounts_never_issue(client, registered, delivery, registration, factory):
+    for email in ["unknown@example.com", "absent@example.com"]:
         assert client.post(REQUEST, json={"correo": email}).status_code == 202
+    assert all(recipient is None for recipient, _, _ in delivery.calls)
     with factory() as db:
         assert db.scalar(select(RecuperacionContrasena)) is None
 
@@ -221,8 +215,6 @@ def test_timing_floor_all_addresses(client, registered, delivery, registration, 
     monkeypatch.setattr(auth, "sleep", waits.append)
     client.post(REQUEST, json={"correo": registration["correo"]})
     client.post(REQUEST, json={"correo": "absent@example.com"})
-    with factory.begin() as db:
-        db.get(Usuario, registered["idUsuario"]).activo = False
     client.post(REQUEST, json={"correo": registration["correo"]})
     assert waits == [0.25, 0.25, 0.25]
 

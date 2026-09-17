@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.security import digest, utcnow
-from app.modules.seguridad_accesos.models import Bitacora, Cliente, Funcion, Rol, RolFuncion, Sesion, Usuario
+from app.modules.seguridad_accesos.models import Bitacora, Cliente, Funcion, Rol, RolFuncion, Usuario
 from app.modules.seguridad_accesos.repositories import cliente
 from app.modules.seguridad_accesos.repositories import usuario as usuario_repository
 from app.modules.seguridad_accesos.services import auth
@@ -24,14 +24,14 @@ def test_registration(client, factory, registration, app):
     assert "set-cookie" not in response.headers
     with factory() as db:
         user = db.get(Usuario, response.json()["idUsuario"])
-        assert (user.tipo, user.nrorol, user.activo) == ("C", "cliente", True)
-        assert user.nombres == registration["nombres"]
+        assert (user.tipo, user.nrorol) == ("C", "cliente")
+        assert user.nombre == registration["nombres"]
         assert user.contrasena.startswith("$argon2id$")
         assert app.state.passwords.verify(user.contrasena, registration["contrasena"])
         profile = db.get(Cliente, user.idusuario)
         assert len(profile.cod_cl) == 10
         assert profile.estado == "frecuente"
-        assert count(db, Sesion) == 0
+        assert not client.app.state.access_tokens._entries
         assert count(db, Bitacora) == 1
 
 
@@ -138,16 +138,16 @@ def test_login_and_digest(client, factory, registered, credentials, settings):
     credential = client.cookies.get(settings.cookie_name)
     assert len(credential) == 43
     with factory() as db:
-        session = db.scalar(select(Sesion))
-        assert session.credencial_digest == digest(credential)
-        assert session.credencial_digest != credential
-        assert session.expira_en - session.creada_en == timedelta(hours=8)
-        assert session.revocada_en is None
-        assert count(db, Sesion) == 1
+        store = client.app.state.access_tokens
+        access = store.get(credential)
+        assert digest(credential) in store._entries and credential not in store._entries
+        assert access.usuario_id == registered["idUsuario"]
+        assert timedelta(hours=7, minutes=59) < access.expira_en - utcnow() <= timedelta(hours=8)
+        assert len(store._entries) == 1
     assert client.get("/api/auth/me").status_code == 200
 
 
-@pytest.mark.parametrize("case", ["wrong_password", "absent", "inactive", "legacy_hash"])
+@pytest.mark.parametrize("case", ["wrong_password", "absent", "legacy_hash"])
 def test_generic_login_failure(client, factory, registered, credentials, case):
     if case == "wrong_password":
         credentials["contrasena"] = "Otra frase incorrecta"
@@ -156,38 +156,33 @@ def test_generic_login_failure(client, factory, registered, credentials, case):
     else:
         with factory.begin() as db:
             user = db.get(Usuario, registered["idUsuario"])
-            if case == "inactive":
-                user.activo = False
-            else:
-                user.contrasena = "unsupported-legacy-value"
+            user.contrasena = "unsupported-legacy-value"
     response = client.post("/api/auth/login", json=credentials)
     assert response.status_code == 401
     assert response.json() == {"error": {"code": "autenticacion_rechazada",
                                         "message": "No se pudo autenticar la solicitud"}}
     assert "set-cookie" not in response.headers
     with factory() as db:
-        assert count(db, Sesion) == 0
+        assert not client.app.state.access_tokens._entries
         event = db.scalar(select(Bitacora).where(Bitacora.accion == "login_rechazado"))
         assert event.usuario_id is None
         assert event.detalles == {"resultado": "rechazado"}
 
 
-@pytest.mark.parametrize("case", ["expired", "revoked", "inactive", "tampered"])
-def test_reject_invalid_session(client, factory, registered, credentials, settings, case):
+@pytest.mark.parametrize("case", ["expired", "revoked", "password_changed", "tampered"])
+def test_reject_invalid_session(client, factory, registered, credentials, settings, case, monkeypatch):
     assert client.post("/api/auth/login", json=credentials).status_code == 200
+    token = client.cookies.get(settings.cookie_name)
     if case == "tampered":
         client.cookies.clear()
         client.cookies.set(settings.cookie_name, "x" * 43, path="/api")
+    elif case == "expired":
+        monkeypatch.setattr("app.core.access_tokens.utcnow", lambda: utcnow() + timedelta(hours=9))
+    elif case == "revoked":
+        client.app.state.access_tokens.revoke(token)
     else:
         with factory.begin() as db:
-            session = db.scalar(select(Sesion))
-            if case == "expired":
-                session.creada_en = utcnow() - timedelta(hours=10)
-                session.expira_en = utcnow() - timedelta(hours=2)
-            elif case == "revoked":
-                session.revocada_en = utcnow()
-            else:
-                db.get(Usuario, registered["idUsuario"]).activo = False
+            db.get(Usuario, registered["idUsuario"]).contrasena = "changed-password-hash"
     assert client.get("/api/auth/me").status_code == 401
 
 
@@ -222,7 +217,7 @@ def test_no_sensitive_response_audit_or_logs(client, factory, registered, creden
     token = client.cookies.get(settings.cookie_name)
     with factory() as db:
         encoded = db.get(Usuario, registered["idUsuario"]).contrasena
-        stored_digest = db.scalar(select(Sesion.credencial_digest))
+        stored_digest = digest(token)
         events = list(db.scalars(select(Bitacora)))
         audit = json.dumps([{ "accion": e.accion, "detalles": e.detalles} for e in events])
     output = response.text + client.get("/api/auth/me").text + audit + caplog.text
@@ -242,7 +237,7 @@ def test_audit_failure_rolls_back_login(client, factory, registered, credentials
     assert "set-cookie" not in result.headers
     assert credentials["contrasena"] not in result.text + caplog.text
     with factory() as db:
-        assert count(db, Sesion) == 0
+        assert not client.app.state.access_tokens._entries
 
 
 def test_login_creates_independent_random_sessions(client, factory, registered, credentials, settings):
@@ -252,7 +247,8 @@ def test_login_creates_independent_random_sessions(client, factory, registered, 
     second = client.cookies.get(settings.cookie_name)
     assert first != second
     with factory() as db:
-        assert count(db, Sesion) == 2
+        assert client.app.state.access_tokens.get(first) is not None
+        assert client.app.state.access_tokens.get(second) is not None
 
 
 def test_validation_does_not_echo_malicious_input(client, registration):

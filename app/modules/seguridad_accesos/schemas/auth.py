@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr, StringConstraints, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field, SecretStr, StringConstraints, field_validator
 
 
 def normalize_email(value):
@@ -14,7 +14,9 @@ class PublicInput(BaseModel):
 
 class Registro(PublicInput):
     ci: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
-    nombres: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+    # Compatibilidad HTTP con los formularios existentes; columna SQL: nombre.
+    nombre: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)] = Field(
+        validation_alias=AliasChoices("nombres", "nombre"))
     apellidoPat: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
     apellidoMat: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
     sexo: Literal["M", "F"]
@@ -66,7 +68,8 @@ class RegistroResponse(BaseModel):
 
 class UsuarioResponse(BaseModel):
     idUsuario: str
-    nombres: str | None
+    tipo: Literal["A", "C", "E"]
+    nombre: str | None = Field(validation_alias=AliasChoices("nombre", "nombres"), serialization_alias="nombres")
     correo: str
 
 

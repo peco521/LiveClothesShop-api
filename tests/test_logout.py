@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.core.security import digest, utcnow
 from app.main import create_app
-from app.modules.seguridad_accesos.models import Bitacora, Funcion, RolFuncion, Sesion, Usuario
+from app.modules.seguridad_accesos.models import Bitacora, Funcion, RolFuncion, Usuario
 from app.modules.seguridad_accesos.services import auth
 
 
@@ -29,7 +29,7 @@ def test_logout_current_session_only(client, factory, registered, credentials, s
     assert result.headers["cache-control"] == "no-store"
     assert client.cookies.get(settings.cookie_name) is None
     assert client.get("/api/auth/me", headers=headers).status_code == 401
-    # Neither transport can resurrect the persisted revoked session.
+    # Neither transport can resurrect the revoked access token.
     client.cookies.set(settings.cookie_name, current, path="/api")
     assert client.get("/api/auth/me").status_code == 401
     assert client.post("/api/auth/logout").status_code == 401
@@ -38,10 +38,8 @@ def test_logout_current_session_only(client, factory, registered, credentials, s
     client.cookies.set(settings.cookie_name, other, path="/api")
     assert client.get("/api/auth/me").status_code == 200
     with factory() as db:
-        sessions = list(db.scalars(select(Sesion)))
-        assert len(sessions) == 2
-        assert next(s for s in sessions if s.credencial_digest == digest(current)).revocada_en is not None
-        assert next(s for s in sessions if s.credencial_digest == digest(other)).revocada_en is None
+        assert client.app.state.access_tokens.get(current) is None
+        assert client.app.state.access_tokens.get(other) is not None
         events = list(db.scalars(select(Bitacora).where(Bitacora.accion == "logout_correcto")))
         assert len(events) == 1
         assert events[0].usuario_id == registered["idUsuario"]
@@ -55,8 +53,8 @@ def test_logout_current_session_only(client, factory, registered, credentials, s
             assert secret not in output
 
 
-@pytest.mark.parametrize("case", ["missing", "malformed", "unknown", "expired", "revoked", "inactive", "ambiguous", "scheme"])
-def test_logout_requires_valid_session(client, factory, registered, credentials, settings, case):
+@pytest.mark.parametrize("case", ["missing", "malformed", "unknown", "expired", "revoked", "password_changed", "ambiguous", "scheme"])
+def test_logout_requires_valid_session(client, factory, registered, credentials, settings, case, monkeypatch):
     client.post("/api/auth/login", json=credentials)
     current = client.cookies.get(settings.cookie_name)
     headers = {}
@@ -68,24 +66,18 @@ def test_logout_requires_valid_session(client, factory, registered, credentials,
         headers = {"Authorization": f"{'Bearer' if case == 'ambiguous' else 'Basic'} {current}"}
         if case == "scheme":
             client.cookies.clear()
+    elif case == "expired":
+        monkeypatch.setattr("app.core.access_tokens.utcnow", lambda: utcnow() + timedelta(hours=9))
+    elif case == "revoked":
+        client.app.state.access_tokens.revoke(current)
     else:
         with factory.begin() as db:
-            session = db.scalar(select(Sesion))
-            if case == "expired":
-                session.creada_en = utcnow() - timedelta(hours=10)
-                session.expira_en = utcnow() - timedelta(hours=1)
-            elif case == "revoked":
-                session.revocada_en = utcnow()
-            else:
-                db.get(Usuario, registered["idUsuario"]).activo = False
-    with factory() as db:
-        before = db.scalar(select(Sesion.revocada_en))
+            db.get(Usuario, registered["idUsuario"]).contrasena = "changed-password-hash"
     result = client.post("/api/auth/logout", headers=headers)
     assert result.status_code == 401
     assert result.json()["error"]["code"] == "autenticacion_rechazada"
     assert "set-cookie" not in result.headers
     with factory() as db:
-        assert db.scalar(select(Sesion.revocada_en)) == before
         assert db.scalar(select(Bitacora).where(Bitacora.accion == "logout_correcto")) is None
 
 
@@ -113,7 +105,6 @@ def test_logout_csrf_does_not_revoke(client, factory, registered, credentials, s
     assert "set-cookie" not in result.headers
     assert client.get("/api/auth/me").status_code == 200
     with factory() as db:
-        assert db.scalar(select(Sesion)).revocada_en is None
         assert db.scalar(select(Bitacora).where(Bitacora.accion == "logout_correcto")) is None
 
 
@@ -150,5 +141,4 @@ def test_logout_audit_failure_rolls_back(client, factory, registered, credential
     assert current not in result.text + caplog.text
     assert client.get("/api/auth/me").status_code == 200
     with factory() as db:
-        assert db.scalar(select(Sesion)).revocada_en is None
         assert db.scalar(select(Bitacora).where(Bitacora.accion == "logout_correcto")) is None

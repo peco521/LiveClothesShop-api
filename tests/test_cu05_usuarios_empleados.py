@@ -11,7 +11,7 @@ from sqlalchemy.schema import CreateTable
 from app.core.dependencies import require_permission
 from app.core.security import digest, utcnow
 from app.modules.seguridad_accesos.models import (
-    Admin, Bitacora, Cliente, Funcion, RecuperacionContrasena, Rol, RolFuncion, Sesion, Usuario,
+    Admin, Bitacora, Cliente, Funcion, RecuperacionContrasena, Rol, RolFuncion, Usuario,
 )
 from app.modules.seguridad_accesos.cu05_usuarios_empleados.models import Empleado
 from app.modules.seguridad_accesos.cu05_usuarios_empleados.repositories import usuario as repository
@@ -43,7 +43,7 @@ def operator(client, factory, registered, credentials):
 
 @pytest.fixture
 def payload(registration):
-    return registration | {"correo": "empleado@example.com", "cod_emp": "EMP001",
+    return registration | {"correo": "empleado@example.com",
                            "cargo": "Cajero", "nroRol": "laboral", "nroSuc": 1}
 
 
@@ -65,8 +65,7 @@ def audit(factory):
 
 ROUTES = [("GET", USERS), ("GET", USERS + "/roles"), ("GET", EMPLOYEES + "/ciudades"),
           ("GET", EMPLOYEES + "/sucursales"), ("GET", USERS + "/missing"),
-          ("POST", EMPLOYEES), ("PATCH", EMPLOYEES + "/missing"),
-          ("PATCH", USERS + "/missing/estado")]
+          ("POST", EMPLOYEES), ("PATCH", EMPLOYEES + "/missing")]
 
 
 @pytest.mark.parametrize("method,path", ROUTES)
@@ -99,7 +98,7 @@ def test_list_internal_and_pagination(client, operator, employee):
     assert page["total"] == 2 and len(page["items"]) == 1 and page["offset"] == 1
     assert client.get(USERS + "?tipo=E").json()["items"][0]["idUsuario"] == employee["idUsuario"]
     assert client.get(USERS + "?q=EMPLEADO@EXAMPLE.COM").json()["total"] == 1
-    assert client.get(USERS + "?activo=false").json()["total"] == 0
+    assert all("activo" not in row for row in result["items"])
     assert client.get(USERS + "?q=%").json()["total"] == 0
 
 
@@ -118,9 +117,9 @@ def test_create_employee_and_atomic_audit(client, operator, payload, factory):
     response = client.post(EMPLOYEES, json=payload | {"correo": " EMPLEADO@EXAMPLE.COM "})
     assert response.status_code == 201
     result = response.json()
-    assert result["tipo"] == "E" and result["activo"] is True
+    assert result["tipo"] == "E" and "activo" not in result
     assert result["correo"] == "empleado@example.com" and result["admin"] is None
-    assert result["empleado"] == {"cod_emp": "EMP001", "cargo": "Cajero", "nroSuc": 1}
+    assert result["empleado"] == {"cod_emp": "Emp-000001", "cargo": "Cajero", "nroSuc": 1}
     with factory() as db:
         assert count(db, Usuario) == 2 and count(db, Empleado) == 1 and count(db, Admin) == 1
         assert count(db, Cliente) == 0
@@ -162,11 +161,12 @@ def test_reference_validation(client, operator, payload, factory, changes, code)
 
 def test_edit_employee(client, employee, factory, operator):
     response = client.patch(EMPLOYEES + "/" + employee["idUsuario"], json={
-        "nombres": "Nuevo Nombre", "correo": " NUEVO@EXAMPLE.COM ", "cargo": "Encargado", "cod_emp": "EMP002"})
+        "nombres": "Nuevo Nombre", "correo": " NUEVO@EXAMPLE.COM ", "cargo": "Encargado"})
     assert response.status_code == 200
     result = response.json()
     assert result["correo"] == "nuevo@example.com" and result["nombres"] == "Nuevo Nombre"
     assert result["empleado"]["cargo"] == "Encargado" and result["tipo"] == "E"
+    assert result["empleado"]["cod_emp"] == employee["empleado"]["cod_emp"]
     assert [event[0] for event in audit(factory)[-2:]] == ["usuario_actualizado", "empleado_actualizado"]
     assert client.patch(EMPLOYEES + "/" + operator, json={"nombres": "No"}).status_code == 404
 
@@ -184,34 +184,18 @@ def test_invalid_edit_does_not_change_data(client, employee, factory, changes, s
     assert audit(factory) == before
 
 
-def test_state_soft_delete_revokes_and_reactivation_does_not_restore_sessions(client, employee, factory, operator):
-    user_id = employee["idUsuario"]
-    now = utcnow()
-    with factory.begin() as db:
-        db.add(Sesion(usuario_id=user_id, credencial_digest=digest("synthetic-session"),
-                      creada_en=now, expira_en=now + timedelta(hours=1)))
-        db.add(RecuperacionContrasena(usuario_id=user_id, token_digest=digest("synthetic-recovery"),
-                                     creada_en=now, expira_en=now + timedelta(hours=1)))
-    path = USERS + "/" + user_id + "/estado"
-    assert client.patch(path, json={"activo": False}).json()["activo"] is False
-    with factory() as db:
-        assert db.get(Usuario, user_id) is not None and db.get(Empleado, user_id) is not None
-        assert db.scalar(select(Sesion).where(Sesion.usuario_id == user_id)).revocada_en is not None
-        assert db.scalar(select(RecuperacionContrasena).where(RecuperacionContrasena.usuario_id == user_id)).utilizada_en is not None
-    assert client.get(USERS + "?activo=false").json()["total"] == 1
-    assert client.patch(path, json={"activo": True}).json()["activo"] is True
+def test_state_endpoint_retired_without_changing_employee(client, employee, factory, operator):
     before = audit(factory)
-    assert client.patch(path, json={"activo": True}).status_code == 200
+    path = USERS + "/" + employee["idUsuario"] + "/estado"
+    for active in (False, True):
+        assert client.patch(path, json={"activo": active}).status_code == 404
+    assert client.get(USERS + "/" + employee["idUsuario"]).json() == employee
     assert audit(factory) == before
-    assert [row[0] for row in before[-2:]] == ["usuario_desactivado", "usuario_activado"]
-    with factory() as db:
-        assert db.scalar(select(Sesion).where(Sesion.usuario_id == user_id)).revocada_en is not None
 
 
-def test_admin_state_has_no_special_lock_or_bypass(client, operator, factory):
-    response = client.patch(USERS + "/" + operator + "/estado", json={"activo": False})
-    assert response.status_code == 200 and response.json()["tipo"] == "A"
-    assert client.get(USERS).status_code == 401
+def test_admin_state_endpoint_retired(client, operator, factory):
+    assert client.patch(USERS + "/" + operator + "/estado", json={"activo": False}).status_code == 404
+    assert client.get(USERS).status_code == 200
     with factory() as db:
         assert db.get(Admin, operator) is not None
 
@@ -262,8 +246,7 @@ def test_real_profile_constraint_failure_rolls_back(client, operator, payload, f
     assert audit(factory) == before
 
 
-@pytest.mark.parametrize("operation", ["edit", "state"])
-def test_update_and_state_rollback(client, employee, factory, monkeypatch, operation):
+def test_update_rollback(client, employee, factory, monkeypatch):
     before = audit(factory)
     def fail(*args):
         raise RuntimeError("synthetic audit failure")
@@ -271,19 +254,13 @@ def test_update_and_state_rollback(client, employee, factory, monkeypatch, opera
     user_id = employee["idUsuario"]
     now = utcnow()
     with factory.begin() as db:
-        db.add(Sesion(usuario_id=user_id, credencial_digest=digest("rollback-session"),
-                      creada_en=now, expira_en=now + timedelta(hours=1)))
         db.add(RecuperacionContrasena(usuario_id=user_id, token_digest=digest("rollback-recovery"),
                                      creada_en=now, expira_en=now + timedelta(hours=1)))
-    if operation == "edit":
-        response = client.patch(EMPLOYEES + "/" + user_id, json={"nombres": "No persistir", "cargo": "No persistir"})
-    else:
-        response = client.patch(USERS + "/" + user_id + "/estado", json={"activo": False})
+    response = client.patch(EMPLOYEES + "/" + user_id, json={"nombre": "No persistir", "cargo": "No persistir"})
     assert response.status_code == 500
     assert client.get(USERS + "/" + user_id).json() == employee
     assert audit(factory) == before
     with factory() as db:
-        assert db.scalar(select(Sesion).where(Sesion.usuario_id == user_id)).revocada_en is None
         assert db.scalar(select(RecuperacionContrasena).where(RecuperacionContrasena.usuario_id == user_id)).utilizada_en is None
 
 
@@ -306,7 +283,6 @@ def test_incoherent_profiles_rejected_without_repair(client, employee, operator,
     before = audit(factory)
     assert client.get(USERS + "/" + target).status_code == 409
     assert client.get(USERS).status_code == 409
-    assert client.patch(USERS + "/" + target + "/estado", json={"activo": False}).status_code == 409
     assert client.patch(EMPLOYEES + "/" + target, json={"cargo": "No"}).status_code == 409
     assert audit(factory) == before
 
@@ -357,9 +333,9 @@ def test_no_unique_ci_or_employee_code_invented(client, operator, employee, payl
 
 def test_csrf_and_cors(client, operator, payload, employee):
     assert client.post(EMPLOYEES, json=payload, headers={"Origin": "https://evil.example"}).status_code == 403
-    path = USERS + "/" + employee["idUsuario"] + "/estado"
+    path = EMPLOYEES + "/" + employee["idUsuario"]
     client.headers.pop("X-CSRF-Protection")
-    assert client.patch(path, json={"activo": False}).status_code == 403
+    assert client.patch(path, json={"cargo": "Otro"}).status_code == 403
     response = client.options(path, headers={"Access-Control-Request-Method": "PATCH"})
     assert response.status_code == 204
     assert "PATCH" in response.headers["access-control-allow-methods"]

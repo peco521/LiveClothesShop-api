@@ -44,7 +44,7 @@ def summary(row, dialect):
         fecha = fecha.replace(tzinfo=timezone.utc)
     return dict(id=str(row.id), usuario_id=row.usuario_id,
                 accion=row.accion if row.accion in KNOWN_ACTIONS else None,
-                fecha=fecha.astimezone(timezone.utc))
+                fecha=fecha.astimezone(timezone.utc), ip=safe_ip(row.ip))
 
 
 def list_events(db, filters):
@@ -59,4 +59,4 @@ def detail(db, event_id):
     if row is None:
         raise DomainError(404, "bitacora_no_encontrada", "Registro de bitácora no encontrado")
     return BitacoraDetalle(**summary(row, db.get_bind().dialect.name),
-                           ip=safe_ip(row.ip), detalles=safe_details(row.accion, row.detalles))
+                           detalles=safe_details(row.accion, row.detalles))

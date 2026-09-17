@@ -174,6 +174,17 @@ def availability_by_branch(db, variant_ids):
                            .order_by(Ciudad.nombre, Sucursal.nombre, Inventario.idvar)).all())
 
 
+def category_brands(db, category_id):
+    """Marcas activas vinculadas a prendas activas de la categoría, sin duplicados."""
+    return list(db.scalars(select(Marca).where(
+        Marca.estado == "activo",
+        select(Producto.idprod).where(
+            Producto.idmarca == Marca.idmarca,
+            Producto.idcat == category_id,
+            Producto.estado == "activo").exists(),
+    ).order_by(Marca.nombre, Marca.idmarca)).all())
+
+
 def facets(db):
     """Listas de referencia para los filtros del catálogo (solo lectura)."""
     return {

@@ -7,9 +7,10 @@ from app.core.database import get_db
 from app.core.dependencies import require_permission
 from app.modules.seguridad_accesos.schemas.auth import RolResponse
 from app.modules.seguridad_accesos.cu05_usuarios_empleados.schemas.usuario import (
-    CiudadOpcion, EmpleadoCrear, EmpleadoEditar, SucursalOpcion, UsuarioDetalle, UsuarioEstado, UsuariosListado,
+    CiudadOpcion, EmpleadoCrear, EmpleadoEditar, SucursalOpcion, UsuarioDetalle, UsuariosListado,
 )
 from app.modules.seguridad_accesos.cu05_usuarios_empleados.services import usuario
+from app.modules.seguridad_accesos.cu05_usuarios_empleados.repositories.usuario import next_employee_code
 
 cu05_identity = require_permission("CU05")
 router = APIRouter(prefix="/api/admin", tags=["CU05 Usuarios y Empleados"],
@@ -23,8 +24,8 @@ def peer(request):
 @router.get("/usuarios", response_model=UsuariosListado)
 def list_users(offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=100),
                q: str = Query("", max_length=100), tipo: Literal["A", "E"] | None = None,
-               activo: bool | None = None, db: Session = Depends(get_db)):
-    return usuario.list_users(db, offset=offset, limit=limit, q=q.strip(), tipo=tipo, activo=activo)
+               db: Session = Depends(get_db)):
+    return usuario.list_users(db, offset=offset, limit=limit, q=q.strip(), tipo=tipo)
 
 
 @router.get("/usuarios/roles", response_model=list[RolResponse])
@@ -35,6 +36,12 @@ def roles(request: Request, db: Session = Depends(get_db)):
 @router.get("/empleados/ciudades", response_model=list[CiudadOpcion])
 def cities(db: Session = Depends(get_db)):
     return usuario.cities(db)
+
+
+@router.get("/empleados/proximo-codigo", response_model=dict[str, str])
+def employee_code(db: Session = Depends(get_db)):
+    # Preview only: allocation occurs atomically when the employee is saved.
+    return {"cod_emp": next_employee_code(db)}
 
 
 @router.get("/empleados/sucursales", response_model=list[SucursalOpcion])
@@ -59,9 +66,3 @@ def edit_employee(idUsuario: str, data: EmpleadoEditar, request: Request, db: Se
                   identity=Depends(cu05_identity)):
     return usuario.edit_employee(db, idUsuario, data, request.app.state.settings,
                                  identity.usuario.idUsuario, peer(request))
-
-
-@router.patch("/usuarios/{idUsuario}/estado", response_model=UsuarioDetalle)
-def set_state(idUsuario: str, data: UsuarioEstado, request: Request, db: Session = Depends(get_db),
-              identity=Depends(cu05_identity)):
-    return usuario.set_state(db, idUsuario, data, identity.usuario.idUsuario, peer(request), request.app.state.settings)

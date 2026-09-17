@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import DomainError
 from app.core.security import utcnow
-from app.modules.seguridad_accesos.models import Bitacora, Funcion, Rol, RolFuncion, Sesion, Usuario
+from app.modules.seguridad_accesos.models import Bitacora, Funcion, Rol, RolFuncion, Usuario
 from app.modules.seguridad_accesos.cu08_bitacora.repositories import bitacora as repository
 from app.modules.seguridad_accesos.cu08_bitacora.schemas.bitacora import BitacoraFiltros, BitacoraResumen
 from app.modules.seguridad_accesos.cu08_bitacora.services import bitacora as service
@@ -26,6 +26,9 @@ ACTIONS = [
     "rol_creado", "rol_actualizado", "permisos_rol_actualizados", "cliente_actualizado",
     "cliente_activado", "cliente_desactivado",
     "ciudad_creada", "ciudad_actualizada", "sucursal_creada", "sucursal_actualizada", "sucursal_estado_actualizado",
+    "reserva_creada", "reserva_cancelada", "reserva_vencida",
+    "carrito_item_agregado", "carrito_item_actualizado", "carrito_item_eliminado",
+    "venta_registrada", "pago_iniciado", "pago_aprobado", "pago_rechazado", "venta_anulada",
 ]
 
 
@@ -76,18 +79,15 @@ def test_03_no_role_name_or_other_permission_bypass(client, operator, factory, p
     assert client.get(BASE + "/1").status_code == 403
 
 
-@pytest.mark.parametrize("state", ["expired", "revoked", "inactive"])
-def test_04_invalid_sessions(client, operator, factory, state):
-    with factory.begin() as db:
-        if state == "inactive":
-            db.get(Usuario, operator).activo = False
-        else:
-            session = db.scalar(select(Sesion).where(Sesion.usuario_id == operator))
-            if state == "expired":
-                session.creada_en = utcnow() - timedelta(days=2)
-                session.expira_en = utcnow() - timedelta(days=1)
-            else:
-                session.revocada_en = utcnow()
+@pytest.mark.parametrize("state", ["expired", "revoked", "password_changed"])
+def test_04_invalid_sessions(client, operator, factory, state, settings, monkeypatch):
+    if state == "password_changed":
+        with factory.begin() as db:
+            db.get(Usuario, operator).contrasena = "changed-password-hash"
+    elif state == "expired":
+        monkeypatch.setattr("app.core.access_tokens.utcnow", lambda: utcnow() + timedelta(hours=9))
+    else:
+        client.app.state.access_tokens.revoke(client.cookies.get(settings.cookie_name))
     for path in (BASE, BASE + "/1"):
         assert client.get(path).status_code == 401
 
@@ -100,8 +100,17 @@ def test_05_summary_detail_contract_and_microseconds(client, operator, factory):
                                   fecha="2026-09-12T12:30:45.123456Z", ip="2001:db8::1",
                                   detalles={"resultado": "exito"})
     listed = client.get(BASE, params={"accion": "rol_creado"}).json()
-    assert listed == dict(items=[{k: response.json()[k] for k in ("id", "usuario_id", "accion", "fecha")}],
+    assert listed == dict(items=[{k: response.json()[k] for k in ("id", "usuario_id", "accion", "fecha", "ip")}],
                           total=1, offset=0, limit=20)
+
+
+@pytest.mark.parametrize("ip,expected", [(None, None), ("synthetic-secret", None), ("127.0.0.1", "127.0.0.1")])
+def test_list_includes_only_safe_ip(client, operator, factory, ip, expected):
+    event_id = seed(factory, ip=ip)
+    result = client.get(BASE, params={"accion": "rol_creado"})
+    assert result.status_code == 200
+    assert result.json()["items"][0]["id"] == event_id
+    assert result.json()["items"][0]["ip"] == expected
 
 
 @pytest.mark.parametrize("action", ACTIONS)
@@ -110,7 +119,7 @@ def test_06_all_exact_actions(client, operator, factory, action):
     id = seed(factory, accion=action, detalles={"resultado": result})
     value = client.get(BASE + "/" + id).json()
     assert value["accion"] == action and value["detalles"] == {"resultado": result}
-    assert len(service.KNOWN_ACTIONS) == 23
+    assert service.KNOWN_ACTIONS == frozenset(ACTIONS)
 
 
 @pytest.mark.parametrize("action", ACTIONS)
@@ -243,7 +252,7 @@ def test_20_utc_offsets_inclusive_microsecond_range(client, operator, factory):
 
 
 def test_21_postgres_aware_and_sqlite_naive_policy():
-    row = SimpleNamespace(id=1, usuario_id=None, accion="rol_creado", fecha=INSTANT.replace(tzinfo=None))
+    row = SimpleNamespace(id=1, usuario_id=None, accion="rol_creado", ip=None, fecha=INSTANT.replace(tzinfo=None))
     with pytest.raises(DomainError) as error:
         service.summary(row, "postgresql")
     assert error.value.status == 500

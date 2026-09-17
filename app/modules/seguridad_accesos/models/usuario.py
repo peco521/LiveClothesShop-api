@@ -1,6 +1,6 @@
 from datetime import date
 
-from sqlalchemy import Boolean, CheckConstraint, Date, ForeignKey, JSON, String, Text, text
+from sqlalchemy import CheckConstraint, Date, ForeignKey, JSON, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,7 +16,7 @@ class Usuario(Base):
 
     idusuario: Mapped[str] = mapped_column(String, primary_key=True)
     ci: Mapped[str] = mapped_column(String)
-    nombres: Mapped[str | None] = mapped_column(String(100))
+    nombre: Mapped[str] = mapped_column(String(100))
     apellidopat: Mapped[str] = mapped_column(String(50))
     apellidomat: Mapped[str] = mapped_column(String(50))
     sexo: Mapped[str] = mapped_column(String(1))
@@ -24,7 +24,6 @@ class Usuario(Base):
     telefono: Mapped[str] = mapped_column(String(20))
     direccion: Mapped[str] = mapped_column(String(150))
     contrasena: Mapped[str] = mapped_column(Text)
-    activo: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     fechanac: Mapped[date] = mapped_column(Date)
     tipo: Mapped[str] = mapped_column(String(1))
     nrorol: Mapped[str] = mapped_column(ForeignKey("rol.nro", onupdate="CASCADE", ondelete="RESTRICT"))

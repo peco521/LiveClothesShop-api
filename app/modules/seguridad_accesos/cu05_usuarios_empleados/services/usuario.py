@@ -4,9 +4,8 @@ from uuid import uuid4
 from sqlalchemy.exc import IntegrityError
 
 from app.core.errors import DomainError
-from app.core.security import utcnow
 from app.modules.seguridad_accesos.models import Rol, Usuario
-from app.modules.seguridad_accesos.repositories import usuario, sesion, recuperacion_contrasena
+from app.modules.seguridad_accesos.repositories import usuario
 from app.modules.seguridad_accesos.services.bitacora import record
 from app.modules.seguridad_accesos.cu05_usuarios_empleados.models import Empleado
 from app.modules.seguridad_accesos.cu05_usuarios_empleados.repositories import usuario as repository
@@ -16,11 +15,11 @@ from app.modules.seguridad_accesos.cu05_usuarios_empleados.schemas.usuario impor
 from app.modules.seguridad_accesos.schemas.auth import RolResponse
 from app.modules.seguridad_accesos.shared.services import continuidad
 
-USER_FIELDS = {"ci": "ci", "nombres": "nombres", "apellidoPat": "apellidopat",
+USER_FIELDS = {"ci": "ci", "nombre": "nombre", "apellidoPat": "apellidopat",
                "apellidoMat": "apellidomat", "sexo": "sexo", "correo": "correo",
                "telefono": "telefono", "direccion": "direccion", "fechaNac": "fechanac",
                "nroRol": "nrorol"}
-EMPLOYEE_FIELDS = {"cod_emp": "cod_emp", "cargo": "cargo", "nroSuc": "nrosuc"}
+EMPLOYEE_FIELDS = {"cargo": "cargo", "nroSuc": "nrosuc"}
 
 
 @contextmanager
@@ -62,7 +61,7 @@ def detail(db, user):
         raise DomainError(409, "perfil_incoherente", "El usuario no tiene un rol válido")
     return UsuarioDetalle(
         idUsuario=user.idusuario, **{key: getattr(user, column) for key, column in USER_FIELDS.items()},
-        tipo=user.tipo, activo=user.activo, rol=RolResponse(nro=role.nro, descripcion=role.descripcion),
+        tipo=user.tipo, rol=RolResponse(nro=role.nro, descripcion=role.descripcion),
         empleado=EmpleadoPerfil(cod_emp=employee.cod_emp, cargo=employee.cargo, nroSuc=employee.nrosuc) if employee else None,
         admin=AdminPerfil(cod_adm=admin.cod_adm) if admin else None,
     )
@@ -99,11 +98,11 @@ def create_employee(db, data, settings, passwords, actor_id, peer):
         validate_role(db, data.nroRol, settings)
         validate_branch(db, data.nroSuc)
         validate_email(db, str(data.correo))
-        user = Usuario(idusuario=str(uuid4()), tipo="E", activo=True,
+        user = Usuario(idusuario=str(uuid4()), tipo="E",
                        contrasena=passwords.hash(data.contrasena.get_secret_value()),
                        **{column: getattr(data, key) for key, column in USER_FIELDS.items()})
         usuario.add(db, user)
-        repository.add_employee(db, Empleado(idusuario=user.idusuario, cod_emp=data.cod_emp,
+        repository.add_employee(db, Empleado(idusuario=user.idusuario, cod_emp=repository.next_employee_code(db, lock=True),
                                             cargo=data.cargo, nrosuc=data.nroSuc))
         record(db, "usuario_creado", actor_id, peer, True)
         record(db, "empleado_creado", actor_id, peer, True)
@@ -143,22 +142,6 @@ def edit_employee(db, user_id, data, settings, actor_id, peer):
             record(db, "usuario_actualizado", actor_id, peer, True)
         if any(key in EMPLOYEE_FIELDS for key in changes):
             record(db, "empleado_actualizado", actor_id, peer, True)
-        result = detail(db, user)
-    return result
-
-
-def set_state(db, user_id, data, actor_id, peer, settings):
-    with transaction(db):
-        before = continuidad.begin_change(db, actor_id, "CU05", settings.cliente_rol_id)
-        user = internal(db, user_id, lock=True)
-        if user.activo != data.activo:
-            user.activo = data.activo
-            continuidad.ensure_remaining(db, before, settings.cliente_rol_id)
-            if not data.activo:
-                now = utcnow()
-                sesion.revoke_all(db, user_id, now)
-                recuperacion_contrasena.invalidate(db, user_id, now)
-            record(db, "usuario_activado" if data.activo else "usuario_desactivado", actor_id, peer, True)
         result = detail(db, user)
     return result
 

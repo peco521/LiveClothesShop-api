@@ -9,7 +9,7 @@ from app.core.database import Base
 
 class Reserva(Base):
     __tablename__ = "reserva"
-    __table_args__ = (CheckConstraint("estado IN ('pendiente', 'confirmada', 'atendida', 'cancelada')"),)
+    __table_args__ = (CheckConstraint("estado IN ('pendiente', 'confirmada', 'atendida', 'cancelada', 'vencida')"),)
 
     nroreserva: Mapped[int] = mapped_column(Integer, primary_key=True)
     fechareserva: Mapped[date] = mapped_column(Date)
@@ -20,14 +20,14 @@ class Reserva(Base):
 
 
 class DetalleReserva(Base):
-    __tablename__ = "detalleReserva"
+    __tablename__ = "detallereserva"
     __table_args__ = (CheckConstraint("cantidad > 0"),)
 
     nroreserva: Mapped[int] = mapped_column(ForeignKey("reserva.nroreserva", onupdate="CASCADE", ondelete="CASCADE"),
                                             primary_key=True)
     iddetalleres: Mapped[int] = mapped_column(Integer, primary_key=True)
     cantidad: Mapped[int] = mapped_column(Integer)
-    idvar: Mapped[str] = mapped_column(ForeignKey("varianteProd.idvariante", onupdate="CASCADE", ondelete="CASCADE"))
+    idvar: Mapped[str] = mapped_column(ForeignKey("varianteprod.idvariante", onupdate="CASCADE", ondelete="CASCADE"))
 
 
 class HorarioAtencion(Base):
@@ -40,6 +40,8 @@ class HorarioAtencion(Base):
 
 class HorarioSuc(Base):
     __tablename__ = "horario_suc"
+
+    dias: Mapped[str] = mapped_column(String(100), server_default="Lunes,Martes,Miercoles,Jueves,Viernes,Sabado,Domingo")
 
     idaten: Mapped[int] = mapped_column(ForeignKey("horario_atencion.idaten", onupdate="CASCADE", ondelete="CASCADE"),
                                         primary_key=True)
@@ -58,13 +60,13 @@ class Carrito(Base):
 
 
 class DetalleCarro(Base):
-    __tablename__ = "detalleCarro"
+    __tablename__ = "detallecarro"
     __table_args__ = (CheckConstraint("cantidad > 0"),)
 
     idcarrito: Mapped[int] = mapped_column(ForeignKey("carrito.idcarrito", onupdate="CASCADE", ondelete="CASCADE"),
                                            primary_key=True)
     iddetallecarro: Mapped[int] = mapped_column(Integer, primary_key=True)
-    idvar: Mapped[str] = mapped_column(ForeignKey("varianteProd.idvariante", onupdate="CASCADE", ondelete="CASCADE"))
+    idvar: Mapped[str] = mapped_column(ForeignKey("varianteprod.idvariante", onupdate="CASCADE", ondelete="CASCADE"))
     cantidad: Mapped[int] = mapped_column(Integer)
 
 
@@ -90,7 +92,7 @@ class Venta(Base):
 
 
 class DetalleVenta(Base):
-    __tablename__ = "detalleVenta"
+    __tablename__ = "detalleventa"
     __table_args__ = (
         CheckConstraint("precioUnitario > 0"),
         CheckConstraint("cantidad > 0"),
@@ -101,7 +103,7 @@ class DetalleVenta(Base):
     iddetalleventa: Mapped[int] = mapped_column(Integer, primary_key=True)
     preciounitario: Mapped[Decimal] = mapped_column(Numeric(10, 2))
     cantidad: Mapped[int] = mapped_column(Integer)
-    idvar: Mapped[str] = mapped_column(ForeignKey("varianteProd.idvariante", onupdate="CASCADE", ondelete="CASCADE"))
+    idvar: Mapped[str] = mapped_column(ForeignKey("varianteprod.idvariante", onupdate="CASCADE", ondelete="CASCADE"))
 
 
 class MovimientoInv(Base):

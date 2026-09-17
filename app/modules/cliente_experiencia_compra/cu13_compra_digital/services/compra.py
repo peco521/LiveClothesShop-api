@@ -86,6 +86,12 @@ def checkout(db, data: CompraCrear, user_id: str, peer):
             raise DomainError(409, "carrito_no_disponible", "No tienes un carrito activo para comprar")
         existente = repository.locked_registrada_por_carrito(db, cart.idcarrito)
         if existente is not None:
+            if existente.nrosuc != data.nroSuc or existente.nit != data.nit:
+                raise DomainError(409, "compra_pendiente", "Cancela la compra pendiente antes de cambiar sus datos")
+            actual = sorted((d.idvar, d.cantidad) for d in detalles_carro)
+            congelado = sorted((d.idvar, d.cantidad) for d in repository.detalles(db, existente.nroventa))
+            if actual != congelado:
+                raise DomainError(409, "carrito_modificado", "El carrito cambió; cancela la compra pendiente")
             # Doble checkout: se reutiliza la venta pendiente, no se duplica.
             return _vista(db, existente), False
         branch = organizacion.branch(db, data.nroSuc, lock=True)

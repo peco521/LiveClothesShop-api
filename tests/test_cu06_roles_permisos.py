@@ -1,4 +1,5 @@
 """CU06 and shared continuity policy; SQLite only, not PostgreSQL concurrency proof."""
+from contextlib import closing
 from unittest.mock import Mock
 
 import pytest
@@ -8,7 +9,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
 
 from app.core.errors import DomainError
-from app.modules.seguridad_accesos.models import Bitacora, Funcion, Rol, RolFuncion, Sesion, Usuario
+from app.modules.seguridad_accesos.models import Bitacora, Funcion, Rol, RolFuncion, Usuario
 from app.modules.seguridad_accesos.cu06_roles_permisos.repositories import rol as repository
 from app.modules.seguridad_accesos.cu06_roles_permisos.services import rol as service
 from app.modules.seguridad_accesos.shared.repositories import continuidad as locks
@@ -180,12 +181,8 @@ def test_public_role_never_receives_functions_and_can_be_cleaned(client, manager
     assert client.get(ROLES + "/cliente/permisos").json()["permisos"] == []
 
 
-@pytest.mark.parametrize("backup", ["none", "inactive", "empty_role"])
+@pytest.mark.parametrize("backup", ["none", "empty_role"])
 def test_last_effective_user_not_last_role(client, manager, payload, factory, backup):
-    if backup == "inactive":
-        user_id = employee(client, payload)
-        with factory.begin() as db:
-            db.get(Usuario, user_id).activo = False
     before = audit(factory)
     response = put(client, "gestor", ["CU05"])
     assert response.status_code == 409 and response.json()["error"]["code"] == "ultimo_usuario_cu06"
@@ -196,14 +193,12 @@ def test_last_effective_user_not_last_role(client, manager, payload, factory, ba
 def test_self_revocation_with_backup_and_same_session(client, manager, payload, factory):
     employee(client, payload)
     cookie_before = dict(client.cookies)
-    with factory() as db:
-        sessions_before = [(s.id, s.revocada_en) for s in db.scalars(select(Sesion))]
+    sessions_before = dict(client.app.state.access_tokens._entries)
     assert put(client, "gestor", ["CU05"]).status_code == 200
     assert client.get(ROLES).status_code == 403
     assert client.get("/api/auth/me").json()["permisos"] == ["CU05"]
     assert dict(client.cookies) == cookie_before
-    with factory() as db:
-        assert [(s.id, s.revocada_en) for s in db.scalars(select(Sesion))] == sessions_before
+    assert client.app.state.access_tokens._entries == sessions_before
 
 
 def test_permission_grant_next_request_and_no_name_bypass(client, operator, factory):
@@ -217,34 +212,29 @@ def test_permission_grant_next_request_and_no_name_bypass(client, operator, fact
     assert client.get("/api/admin/usuarios").status_code == 403
 
 
-@pytest.mark.parametrize("operation", ["state", "role"])
-def test_cu05_cannot_remove_last_eligible_user(client, operator, payload, factory, operation):
+def test_cu05_cannot_remove_last_eligible_user(client, operator, payload, factory):
     user_id = employee(client, payload)
     before = audit(factory)
-    if operation == "state":
-        response = client.patch(f"/api/admin/usuarios/{user_id}/estado", json={"activo": False})
-    else:
-        response = client.patch(f"/api/admin/empleados/{user_id}", json={"nroRol": "laboral"})
+    response = client.patch(f"/api/admin/empleados/{user_id}", json={"nroRol": "laboral"})
     assert response.status_code == 409 and response.json()["error"]["code"] == "ultimo_usuario_cu06"
     assert audit(factory) == before
     with factory() as db:
         user = db.get(Usuario, user_id)
-        assert user.activo and user.nrorol == "roles"
+        assert user.nrorol == "roles"
 
 
-def test_cu05_zero_state_recovery_noop_and_allowed_deactivation(client, operator, payload, factory):
+def test_cu05_zero_state_recovery_noop_and_role_changes(client, operator, payload, factory):
     user_id = employee(client, payload, role="laboral")
     before = audit(factory)
     assert client.patch(f"/api/admin/empleados/{user_id}", json={"nroRol": "laboral"}).status_code == 200
-    assert client.patch(f"/api/admin/usuarios/{user_id}/estado", json={"activo": True}).status_code == 200
     assert audit(factory) == before
     assert client.patch(f"/api/admin/empleados/{user_id}", json={"nroRol": "roles"}).status_code == 200
     employee(client, payload, email="second@example.com")
-    assert client.patch(f"/api/admin/usuarios/{user_id}/estado", json={"activo": False}).status_code == 200
+    assert client.patch(f"/api/admin/empleados/{user_id}", json={"nroRol": "laboral"}).status_code == 200
 
 
-def test_admin_self_deactivation_last_cu06_rejected(client, manager):
-    assert client.patch(f"/api/admin/usuarios/{manager}/estado", json={"activo": False}).status_code == 409
+def test_admin_self_deactivation_not_supported(client, manager):
+    assert client.patch(f"/api/admin/usuarios/{manager}/estado", json={"activo": False}).status_code == 404
     assert client.get(ROLES).status_code == 200
 
 
@@ -331,7 +321,7 @@ def test_pg_lock_contract_and_isolation_fail_closed():
         assert error.value.code == "aislamiento_no_compatible"
 
 
-@pytest.mark.parametrize("change,status", [("permission", 403), ("state", 401), ("role", 403)])
+@pytest.mark.parametrize("change,status", [("permission", 403), ("role", 403)])
 def test_actor_revalidated_after_lock_before_target(client, manager, factory, monkeypatch, change, status):
     original = locks.lock
     def changed_during_wait(db):
@@ -339,8 +329,6 @@ def test_actor_revalidated_after_lock_before_target(client, manager, factory, mo
         # Simulates the new visible state after a wait, not concurrent SQLite.
         if change == "permission":
             db.delete(db.get(RolFuncion, ("gestor", "CU06")))
-        elif change == "state":
-            db.get(Usuario, manager).activo = False
         else:
             db.get(Usuario, manager).nrorol = "laboral"
         db.flush()
@@ -353,7 +341,7 @@ def test_actor_revalidated_after_lock_before_target(client, manager, factory, mo
         assert db.get(RolFuncion, ("laboral", "CU05")) is None
 
 
-@pytest.mark.parametrize("operation", ["put", "edit_employee", "state"])
+@pytest.mark.parametrize("operation", ["put", "edit_employee"])
 def test_shared_lock_precedes_target_locks(client, manager, payload, monkeypatch, operation):
     user_id = employee(client, payload, role="laboral")
     calls = []
@@ -377,10 +365,7 @@ def test_shared_lock_precedes_target_locks(client, manager, payload, monkeypatch
                 calls.append("target")
             return original(db, user_id, lock=lock)
         monkeypatch.setattr(cu05, "internal", internal)
-        if operation == "state":
-            response = client.patch(f"/api/admin/usuarios/{user_id}/estado", json={"activo": False})
-        else:
-            response = client.patch(f"/api/admin/empleados/{user_id}", json={"nroRol": "gestor"})
+        response = client.patch(f"/api/admin/empleados/{user_id}", json={"nroRol": "gestor"})
     assert response.status_code == 200
     assert calls[:2] == ["common", "target"]
 
@@ -392,13 +377,12 @@ def test_initial_zero_and_missing_function_do_not_block_cu05(client, operator, p
         db.delete(db.get(Funcion, "CU06"))
     user_id = employee(client, payload, role="laboral")
     assert client.patch(f"/api/admin/empleados/{user_id}", json={"cargo": "Nuevo"}).status_code == 200
-    assert client.patch(f"/api/admin/usuarios/{user_id}/estado", json={"activo": False}).status_code == 200
 
 
 def test_two_roles_serialized_revocations_keep_last_user(client, manager, payload, app, factory):
     # Sequential outcomes required after the common lock. NOT a concurrency test.
     employee(client, payload)
-    with TestClient(app) as other:
+    with closing(TestClient(app)) as other:
         other.headers.update({"Origin": "http://localhost:4200", "X-CSRF-Protection": "1"})
         assert other.post("/api/auth/login", json={"correo": "backup@example.com", "contrasena": payload["contrasena"]}).status_code == 200
         assert put(client, "gestor", ["CU05"]).status_code == 200
@@ -408,11 +392,11 @@ def test_two_roles_serialized_revocations_keep_last_user(client, manager, payloa
         assert audit(factory) == before
 
 
-def test_revocation_then_cu05_deactivation_keeps_last_user(client, manager, payload, factory):
+def test_revocation_then_cu05_role_change_keeps_last_user(client, manager, payload, factory):
     user_id = employee(client, payload)
     assert put(client, "gestor", ["CU05"]).status_code == 200
     before = audit(factory)
-    response = client.patch(f"/api/admin/usuarios/{user_id}/estado", json={"activo": False})
+    response = client.patch(f"/api/admin/empleados/{user_id}", json={"nroRol": "laboral"})
     assert response.status_code == 409
     assert audit(factory) == before
 
@@ -442,14 +426,14 @@ def test_cu06_only_actor_can_assign_other_permissions_no_subset(client, manager,
 def test_revalidation_refreshes_cached_actor(factory, manager, settings, permission):
     with factory() as db:
         cached = db.get(Usuario, manager)
-        assert cached.activo
-        db.execute(update(Usuario).where(Usuario.idusuario == manager).values(activo=False)
+        assert cached.nrorol == "gestor"
+        db.execute(update(Usuario).where(Usuario.idusuario == manager).values(nrorol="laboral")
                    .execution_options(synchronize_session=False))
-        assert cached.activo  # ORM identity map deliberately stale.
+        assert cached.nrorol == "gestor"  # ORM identity map deliberately stale.
         with pytest.raises(DomainError) as error:
             continuidad.begin_change(db, manager, permission, settings.cliente_rol_id)
-        assert error.value.status == 401
-        assert cached.activo is False
+        assert error.value.status == 403
+        assert cached.nrorol == "laboral"
         db.rollback()
 
 
@@ -463,8 +447,7 @@ def test_role_read_after_lock_refreshes_cached_description(factory, manager):
         db.rollback()
 
 
-@pytest.mark.parametrize("operation", ["state", "role"])
-def test_cu05_actor_permission_rechecked_after_lock(client, manager, payload, monkeypatch, factory, operation):
+def test_cu05_actor_permission_rechecked_after_lock(client, manager, payload, monkeypatch, factory):
     user_id = employee(client, payload, role="laboral")
     original = locks.lock
     def lost_permission(db):
@@ -474,14 +457,11 @@ def test_cu05_actor_permission_rechecked_after_lock(client, manager, payload, mo
         return result
     monkeypatch.setattr(locks, "lock", lost_permission)
     before = audit(factory)
-    if operation == "state":
-        response = client.patch(f"/api/admin/usuarios/{user_id}/estado", json={"activo": False})
-    else:
-        response = client.patch(f"/api/admin/empleados/{user_id}", json={"nroRol": "roles"})
+    response = client.patch(f"/api/admin/empleados/{user_id}", json={"nroRol": "roles"})
     assert response.status_code == 403 and audit(factory) == before
     with factory() as db:
         user = db.get(Usuario, user_id)
-        assert user.activo and user.nrorol == "laboral"
+        assert user.nrorol == "laboral"
 
 
 def test_audit_insert_then_failure_rolls_back_audit_and_permission(client, manager, factory, monkeypatch):

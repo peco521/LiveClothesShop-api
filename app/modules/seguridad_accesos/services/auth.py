@@ -1,14 +1,15 @@
 import secrets
 from time import monotonic, sleep
-from datetime import timedelta, timezone
+from datetime import timedelta
 from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
 
+from app.core.database import is_postgresql
 from app.core.errors import DomainError
 from app.core.security import digest, new_credential, utcnow
-from app.modules.seguridad_accesos.models import RecuperacionContrasena, Sesion, Usuario
-from app.modules.seguridad_accesos.repositories import cliente, rol, sesion, usuario
+from app.modules.seguridad_accesos.models import RecuperacionContrasena, Usuario
+from app.modules.seguridad_accesos.repositories import cliente, rol, usuario
 from app.modules.seguridad_accesos.repositories import recuperacion_contrasena as recovery
 from app.modules.seguridad_accesos.schemas.auth import AuthResponse, RegistroResponse, RolResponse, UsuarioResponse
 from app.modules.seguridad_accesos.services.bitacora import record
@@ -20,7 +21,7 @@ def authentication_failed():
 
 def register(db, data, settings, passwords, peer):
     email = str(data.correo)
-    # Argon2 before opening the write transaction.
+    # Prepare the configured password representation before the write transaction.
     encoded = passwords.hash(data.contrasena.get_secret_value())
     user_id = str(uuid4())
     try:
@@ -29,16 +30,29 @@ def register(db, data, settings, passwords, peer):
                 raise DomainError(409, "correo_duplicado", "El correo ya está registrado")
             if rol.public_role(db, settings.cliente_rol_id) is None:
                 raise DomainError(503, "registro_no_disponible", "El registro no está disponible")
-            user = Usuario(
-                idusuario=user_id, ci=data.ci, nombres=data.nombres,
-                apellidopat=data.apellidoPat, apellidomat=data.apellidoMat,
-                sexo=data.sexo, correo=email, telefono=data.telefono,
-                direccion=data.direccion, fechanac=data.fechaNac,
-                contrasena=encoded, activo=True, tipo="C", nrorol=settings.cliente_rol_id,
-            )
-            usuario.add(db, user)
-            # cod_cl is NOT unique in the official schema; identity is idusuario.
-            cliente.add(db, user_id, secrets.token_hex(5))
+            client_code = secrets.token_hex(5)
+            if is_postgresql(db):
+                usuario.registrar_cliente(
+                    db, user_id=user_id, ci=data.ci, nombre=data.nombre,
+                    apellido_pat=data.apellidoPat, apellido_mat=data.apellidoMat,
+                    sexo=data.sexo, correo=email, telefono=data.telefono,
+                    direccion=data.direccion, password_hash=encoded,
+                    fecha_nac=data.fechaNac, role_id=settings.cliente_rol_id,
+                    client_code=client_code,
+                )
+            else:
+                # SQLite se conserva como sustituto de pruebas; la BD oficial
+                # PostgreSQL usa el procedimiento almacenado anterior.
+                user = Usuario(
+                    idusuario=user_id, ci=data.ci, nombre=data.nombre,
+                    apellidopat=data.apellidoPat, apellidomat=data.apellidoMat,
+                    sexo=data.sexo, correo=email, telefono=data.telefono,
+                    direccion=data.direccion, fechanac=data.fechaNac,
+                    contrasena=encoded, tipo="C", nrorol=settings.cliente_rol_id,
+                )
+                usuario.add(db, user)
+                # cod_cl no es UNIQUE en el esquema oficial.
+                cliente.add(db, user_id, client_code)
             record(db, "cliente_registrado", user_id, peer, True)
     except IntegrityError:
         # The transaction has rolled back, including a partially-created profile.
@@ -53,65 +67,75 @@ def public_identity(db, user, expires):
     if role is None:
         raise authentication_failed()
     return AuthResponse(
-        usuario=UsuarioResponse(idUsuario=user.idusuario, nombres=user.nombres, correo=user.correo),
+        usuario=UsuarioResponse(idUsuario=user.idusuario, tipo=user.tipo, nombre=user.nombre, correo=user.correo),
         rol=RolResponse(nro=role.nro, descripcion=role.descripcion),
         permisos=rol.permissions(db, role.nro), expiraEn=expires,
     )
 
 
-def login(db, data, settings, passwords, peer):
-    accepted = False
+def login(db, data, settings, passwords, peer, access_tokens, *, allowed_types=None):
     credential = None
     response = None
-    with db.begin():
-        matches = usuario.by_email(db, str(data.correo), lock=True)
-        user = matches[0] if len(matches) == 1 else None
-        valid = passwords.verify(user.contrasena if user else None, data.contrasena.get_secret_value())
-        if valid and user.activo and rol.get(db, user.nrorol) is not None:
-            now = utcnow()
-            expires = now + timedelta(hours=settings.session_hours)
-            credential = new_credential()
-            sesion.add(db, Sesion(usuario_id=user.idusuario, credencial_digest=digest(credential),
-                                 creada_en=now, expira_en=expires))
-            response = public_identity(db, user, expires)
-            record(db, "login_correcto", user.idusuario, peer, True)
-            accepted = True
-        else:
-            # No identity or email is recorded for rejected requests.
-            record(db, "login_rechazado", None, peer, False)
+    try:
+        with db.begin():
+            matches = usuario.by_email(db, str(data.correo), lock=True)
+            user = matches[0] if len(matches) == 1 else None
+            password = data.contrasena.get_secret_value()
+            valid, migrate = passwords.verify_for_login(user.contrasena if user else None, password)
+            if (valid and user is not None and rol.get(db, user.nrorol) is not None
+                    and (allowed_types is None or user.tipo in allowed_types)):
+                if migrate:
+                    encoded = passwords.hash(password)
+                    if is_postgresql(db):
+                        usuario.cambiar_contrasena(db, user.correo, encoded)
+                        db.refresh(user, ["contrasena"])
+                        if user.contrasena != encoded:
+                            raise authentication_failed()
+                    else:
+                        user.contrasena = encoded
+                    # Migration and login share the row lock and transaction.
+                    # The access token must reference the NEW password digest.
+                expires = utcnow() + timedelta(hours=settings.session_hours)
+                response = public_identity(db, user, expires)
+                credential = access_tokens.issue(user.idusuario, user.contrasena, expires)
+                record(db, "login_correcto", user.idusuario, peer, True)
+            else:
+                # No identity or email is recorded for rejected requests.
+                record(db, "login_rechazado", None, peer, False)
+    except Exception:
+        # La cookie se entrega solo al confirmar la auditoría. Si falla incluso
+        # el commit, descartar también el acceso reservado en memoria.
+        if credential is not None:
+            access_tokens.revoke(credential)
+        raise
     # Raise after committing the rejection event, not from inside the transaction.
-    if not accepted:
+    if credential is None:
         raise authentication_failed()
     return response, credential
 
 
-def current_session(db, credential):
-    _, identity = authenticated_session(db, credential)
+def current_session(db, credential, access_tokens):
+    _, identity = authenticated_session(db, credential, access_tokens)
     return identity
 
 
-def authenticated_session(db, credential):
-    session = sesion.by_digest(db, digest(credential))
-    if session is None or session.revocada_en is not None:
+def authenticated_session(db, credential, access_tokens):
+    access = access_tokens.get(credential)
+    if access is None:
         raise authentication_failed()
-    expires = session.expira_en
-    # SQLite test adapter does not preserve timezone info; PostgreSQL does.
-    if expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
-    if expires <= utcnow():
+    user = db.get(Usuario, access.usuario_id)
+    # Cambiar la contraseña invalida también accesos previos y otros dispositivos.
+    if user is None or not secrets.compare_digest(access.password_digest, digest(user.contrasena)):
+        access_tokens.revoke(credential)
         raise authentication_failed()
-    user = db.get(Usuario, session.usuario_id)
-    if user is None or not user.activo:
-        raise authentication_failed()
-    return session, public_identity(db, user, expires)
+    return access, public_identity(db, user, access.expira_en)
 
 
-def logout(db, credential, peer):
+def logout(db, credential, peer, access_tokens):
     with db.begin():
-        session, _ = authenticated_session(db, credential)
-        if not sesion.revoke(db, session.id, utcnow()):
-            raise authentication_failed()
-        record(db, "logout_correcto", session.usuario_id, peer, True)
+        access, _ = authenticated_session(db, credential, access_tokens)
+        record(db, "logout_correcto", access.usuario_id, peer, True)
+    access_tokens.revoke(credential)
 
 
 def request_recovery(db, data, delivery, peer):
@@ -139,7 +163,7 @@ def request_recovery(db, data, delivery, peer):
 
 def _issue_recovery(db, data, delivery, peer, token, token_digest):
     matches = usuario.by_email(db, str(data.correo), lock=True)
-    user = matches[0] if len(matches) == 1 and matches[0].activo else None
+    user = matches[0] if len(matches) == 1 else None
     now = utcnow()
     expires = now + timedelta(minutes=30)
     if user:
@@ -161,10 +185,14 @@ def reset_password(db, data, passwords, peer):
         # Same lock order as issuance and login. Conditional consume rechecks after waiting.
         user = usuario.locked(db, token.usuario_id)
         now = utcnow()
-        if user is None or not user.activo or not recovery.consume(db, token.id, now):
+        if user is None or not recovery.consume(db, token.id, now):
             raise rejected
-        user.contrasena = encoded
+        if is_postgresql(db):
+            usuario.cambiar_contrasena(db, user.correo, encoded)
+            db.expire(user, ["contrasena"])
+        else:
+            user.contrasena = encoded
         recovery.invalidate(db, user.idusuario, now)
-        sesion.revoke_all(db, user.idusuario, now)
+        # authenticated_session compara la huella de la contraseña en cada petición.
         record(db, "contrasena_restablecida", user.idusuario, peer, True)
     return {"mensaje": "Contraseña restablecida correctamente"}

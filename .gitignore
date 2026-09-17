@@ -14,6 +14,7 @@ venv/
 
 # Pytest
 .pytest_cache/
+pytest-cache-files-*/
 
 # IDE
 .idea/
@@ -21,3 +22,9 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Documentación y scripts locales de base de datos
+docs/
+database/
+tests/
+

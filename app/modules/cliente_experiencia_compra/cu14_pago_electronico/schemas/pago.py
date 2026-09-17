@@ -32,3 +32,4 @@ class PagoDetalle(BaseModel):
     referencia: str | None
     nroVenta: int
     estadoVenta: str
+    checkoutUrl: str | None = None

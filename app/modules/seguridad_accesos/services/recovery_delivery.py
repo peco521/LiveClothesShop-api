@@ -8,7 +8,9 @@ class RecoveryDelivery(Protocol):
     """Trusted injected adapter, never an HTTP endpoint.
 
     dispatch must have comparable latency for a recipient and None (dummy work),
-    must not log/persist plaintext tokens, and must raise on delivery failure.
+    must not log/persist plaintext tokens, and must raise on acceptance failure.
+    Queued adapters confirm acceptance only; remote delivery failures must mark
+    the provider unavailable globally and never expose recipient-specific errors.
     Availability must be global, not recipient-dependent; implementations must
     not expose recipient rejection/bounce results through this synchronous API.
     Links must use /restablecer-contrasena#token=<token>, never a query string.

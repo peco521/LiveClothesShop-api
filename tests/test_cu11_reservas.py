@@ -234,7 +234,7 @@ def test_vencimiento_lazy_libera(client, customer, factory):
     with factory.begin() as db:
         db.get(Reserva, nro).fechareserva = yesterday
     detail = client.get(f"{BASE}/{nro}").json()
-    assert detail["estado"] == "cancelada" and detail["vencida"] is True
+    assert detail["estado"] == "vencida" and detail["vencida"] is True
     assert inventario(factory, 1) == (10, 4)
     # Segunda reserva: la expiración también se dispara al listar.
     otro = client.post(BASE, json=body()).json()["nroReserva"]
@@ -243,8 +243,8 @@ def test_vencimiento_lazy_libera(client, customer, factory):
     listed = client.get(BASE).json()
     assert listed["total"] == 2
     by_nro = {item["nroReserva"]: item for item in listed["items"]}
-    assert by_nro[otro]["estado"] == "cancelada" and by_nro[otro]["vencida"] is True
-    assert by_nro[nro]["vencida"] is False  # ya saldada en la lectura anterior
+    assert by_nro[otro]["estado"] == "vencida" and by_nro[otro]["vencida"] is True
+    assert by_nro[nro]["vencida"] is True
     assert inventario(factory, 1) == (10, 4)
 
 
@@ -330,7 +330,7 @@ def test_sucursales_cliente(client, customer):
     assert data["total"] == 2  # solo activas (Central y Sin Horario)
     assert {s["nombre"] for s in data["items"]} == {"Central", "Sin Horario"}
     horarios = client.get(SUCURSALES + "/1/horarios").json()
-    assert horarios["rangos"] == [{"horaIni": "08:00:00", "horaFin": "18:00:00"}]
+    assert horarios["rangos"] == [{"horaIni": "08:00:00", "horaFin": "18:00:00", "dias": [1,2,3,4,5,6,7]}]
     assert client.get(SUCURSALES + "/3/horarios").json()["rangos"] == []
     assert client.get(SUCURSALES + "/999/horarios").status_code == 404
     assert client.get(SUCURSALES + "/2/horarios").status_code == 404

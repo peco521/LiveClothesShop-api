@@ -1,7 +1,3 @@
-import hashlib
-import re
-from pathlib import Path
-
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -10,31 +6,25 @@ from sqlalchemy.schema import CreateTable
 
 from app.core.config import Settings
 from app.main import create_app
-from app.modules.seguridad_accesos.models import Sesion, Usuario
+from app.core.database import Base
+from app.modules.seguridad_accesos.models import Usuario
 
 
 def test_postgresql_mapping():
-    ddl = str(CreateTable(Sesion.__table__).compile(dialect=postgresql.dialect()))
-    assert "GENERATED ALWAYS AS IDENTITY" in ddl
-    assert "TIMESTAMP WITH TIME ZONE" in ddl
-    assert "ON DELETE RESTRICT" in ddl
-    assert "credencial_digest ~" in ddl
+    ddl = str(CreateTable(Usuario.__table__).compile(dialect=postgresql.dialect()))
+    assert "nombre VARCHAR(100)" in ddl
+    assert "nombres" not in ddl and "activo" not in ddl
     assert Usuario.__table__.c.nrorol.type.length == 15
 
 
-def test_schema_move_integrity():
-    workspace = Path(__file__).resolve().parents[2]
-    source = workspace / "database/schema.sql"
-    assert not (workspace / ".opencode/agent/database/schema.sql").exists()
-    sql = source.read_text(encoding="utf-8")
-    assert len(re.findall(r"create table", sql, re.I)) == 40
-    unchanged = re.sub(r"create table (usuario|sucursal)\s*\(.*?\);", "", sql, flags=re.I | re.S)
-    unchanged = re.sub(r"CREATE TABLE sesion \(.*?(?=CREATE TABLE color)", "", unchanged, flags=re.S)
-    assert hashlib.sha256(unchanged.strip().encode()).hexdigest() == "e4174e330902a3464d773fc45916ab0a254e1443c0c45a0b9b1d521d7e85410d"
-    assert "contrasena text not null" in sql
-    assert "activo boolean not null default true" in sql
-    assert "nombres varchar(100)" in sql
-    assert sql.count("on update cascade on delete restrict") == 2
+def test_schema_does_not_require_session_table(factory):
+    from sqlalchemy import inspect
+    assert "sesion" not in Base.metadata.tables
+    tables = inspect(factory.kw["bind"]).get_table_names()
+    assert "sesion" not in tables
+    columns = {column["name"] for column in inspect(factory.kw["bind"]).get_columns("usuario")}
+    assert "nombre" in columns
+    assert columns.isdisjoint({"activo", "nombres"})
 
 
 @pytest.mark.parametrize("overrides", [

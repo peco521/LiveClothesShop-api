@@ -101,7 +101,11 @@ def product_detail(db, idProd: str):
         variantes=variant_rows, disponibilidad=availability_rows)
 
 
-def facets(db, group: str):
+def facets(db, group: str, *, idCat: int | None = None):
+    if group == "marcas" and idCat is not None:
+        rows = repository.category_brands(db, idCat)
+        items = [FacetaItem(id=row.idmarca, nombre=row.nombre) for row in rows]
+        return FacetasListado(items=items, total=len(items))
     data = repository.facets(db)
     if group not in data:
         raise DomainError(404, "faceta_no_encontrada", "Filtro no encontrado")

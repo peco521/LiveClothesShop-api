@@ -22,8 +22,8 @@ def current_credential(request: Request):
     return credential
 
 
-def current_identity(credential: str = Depends(current_credential), db: Session = Depends(get_db)):
-    return current_session(db, credential)
+def current_identity(request: Request, credential: str = Depends(current_credential), db: Session = Depends(get_db)):
+    return current_session(db, credential, request.app.state.access_tokens)
 
 
 def require_permission(permission: str):

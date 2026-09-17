@@ -32,8 +32,25 @@ def register(data: Registro, request: Request, db: Session = Depends(get_db)):
 
 @router.post("/login", response_model=AuthResponse)
 def login(data: Login, request: Request, response: Response, db: Session = Depends(get_db)):
+    # Compatibility endpoint for existing API consumers; web panels use the
+    # type-restricted endpoints below. Permissions remain checked per operation.
+    return _login(data, request, response, db)
+
+
+@router.post("/login/cliente", response_model=AuthResponse)
+def client_login(data: Login, request: Request, response: Response, db: Session = Depends(get_db)):
+    return _login(data, request, response, db, allowed_types={"C"})
+
+
+@router.post("/login/admin", response_model=AuthResponse)
+def admin_login(data: Login, request: Request, response: Response, db: Session = Depends(get_db)):
+    return _login(data, request, response, db, allowed_types={"A", "E"})
+
+
+def _login(data, request, response, db, allowed_types=None):
     settings = request.app.state.settings
-    result, credential = auth.login(db, data, settings, request.app.state.passwords, peer(request))
+    result, credential = auth.login(db, data, settings, request.app.state.passwords, peer(request),
+                                    request.app.state.access_tokens, allowed_types=allowed_types)
     response.set_cookie(settings.cookie_name, credential, httponly=True,
                         secure=settings.cookie_secure, samesite=settings.cookie_samesite,
                         path="/api", max_age=settings.session_hours * 3600)
@@ -47,7 +64,7 @@ def me(identity=Depends(current_identity)):
 
 @router.post("/logout", status_code=204)
 def logout(request: Request, credential: str = Depends(current_credential), db: Session = Depends(get_db)):
-    auth.logout(db, credential, peer(request))
+    auth.logout(db, credential, peer(request), request.app.state.access_tokens)
     settings = request.app.state.settings
     response = Response(status_code=204)
     response.delete_cookie(settings.cookie_name, path="/api", httponly=True,

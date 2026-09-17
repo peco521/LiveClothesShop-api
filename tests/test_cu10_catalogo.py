@@ -94,6 +94,26 @@ def inventory_snapshot(factory):
                 db.scalars(__import__("sqlalchemy").select(Inventario).order_by(Inventario.nroinv))]
 
 
+def test_category_brands_exclude_unrelated_and_inactive(client, customer, factory):
+    with factory.begin() as db:
+        db.add_all([
+            Marca(idmarca=2, nombre="Otra categoría", estado="activo"),
+            Marca(idmarca=3, nombre="Marca inactiva", estado="inactivo"),
+            Marca(idmarca=4, nombre="Solo prendas inactivas", estado="activo"),
+        ])
+        db.flush()
+        db.add_all([
+            Producto(idprod="extra-2", descripcion="Otra", estado="activo", idcat=2, idmarca=2, idcol=1, idprov=1),
+            Producto(idprod="extra-3", descripcion="Otra", estado="activo", idcat=1, idmarca=3, idcol=1, idprov=1),
+            Producto(idprod="extra-4", descripcion="Otra", estado="inactivo", idcat=1, idmarca=4, idcol=1, idprov=1),
+        ])
+    response = client.get("/api/catalogo/marcas", params={"idCat": 1})
+    assert response.status_code == 200
+    assert response.json() == {"items": [{"id": 1, "nombre": "Andes"}], "total": 1}
+    assert client.get("/api/catalogo/marcas", params={"idCat": 999}).json()["items"] == []
+    assert client.get("/api/catalogo/marcas", params={"idCat": 0}).status_code == 422
+
+
 def test_routes_require_authentication(client, catalog):
     assert client.get(BASE).status_code == 401
     assert client.get(BASE + "/prod-001").status_code == 401

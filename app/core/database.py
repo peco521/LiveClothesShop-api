@@ -19,3 +19,14 @@ def get_db(request: Request):
             yield db
         finally:
             db.rollback()
+
+
+def is_postgresql(db) -> bool:
+    """Indica si la sesión puede usar los procedimientos de la BD oficial."""
+    return db.get_bind().dialect.name == "postgresql"
+
+
+def sqlstate(exc) -> str | None:
+    """Extrae SQLSTATE sin incluir texto ni parámetros sensibles del driver."""
+    original = getattr(exc, "orig", None)
+    return getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)

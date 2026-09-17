@@ -98,16 +98,14 @@ def provision(db, cliente_rol_id: str, data: SuperAdminInput | None = None,
                     raise BootstrapError("cod_adm contradice el perfil admin existente; no se modificó.")
                 if admin.has_incompatible_profile(db, user.idusuario):
                     raise BootstrapError("El usuario tiene un perfil Cliente o Empleado contradictorio.")
-                if not user.activo:
-                    raise BootstrapError("El usuario existente está inactivo; no se reactivó.")
                 return False
             user = Usuario(
-                idusuario=str(uuid4()), ci=data.ci, nombres=data.nombres,
+                idusuario=str(uuid4()), ci=data.ci, nombre=data.nombre,
                 apellidopat=data.apellidoPat, apellidomat=data.apellidoMat,
                 sexo=data.sexo, correo=str(data.correo), telefono=data.telefono,
                 direccion=data.direccion, fechanac=data.fechaNac,
                 contrasena=passwords.hash(data.contrasena.get_secret_value()),
-                activo=True, tipo="A", nrorol=SUPERADMIN_ROL_ID,
+                tipo="A", nrorol=SUPERADMIN_ROL_ID,
             )
             usuario.add(db, user)
             admin.add(db, user.idusuario, data.cod_adm)

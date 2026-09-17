@@ -59,6 +59,7 @@ def iniciar(db, data: PagoCrear, user_id: str, peer, pasarela, environment: str)
     """Fase 1 (commit) + fase 2 (pasarela, sin tx) + fase 3 (commit)."""
     _validar_escenario(data.escenario, environment)
     with transaction(db):
+        carrito_repo.locked_cliente(db, user_id)
         venta = repository.locked_venta(db, data.nroVenta)
         if venta is None or venta.idusuariocl != user_id:
             raise DomainError(404, "venta_no_encontrada", "Venta no encontrada")
@@ -76,7 +77,7 @@ def iniciar(db, data: PagoCrear, user_id: str, peer, pasarela, environment: str)
         snapshot = (pago.idpago, venta.total, data.metodo, venta.nroventa, data.escenario)
     resultado = _cobrar(pasarela, snapshot)
     with transaction(db):
-        return _finalizar(db, snapshot[0], user_id, peer, resultado)
+        return _resolver_mock(db, snapshot[0], user_id, peer, resultado)
 
 
 def consultar(db, idPago: int, user_id: str):
@@ -90,6 +91,7 @@ def reprocesar(db, idPago: int, data: PagoReprocesar, user_id: str, peer, pasare
     """Reintento controlado de un pago pendiente (p. ej. tras timeout)."""
     _validar_escenario(data.escenario, environment)
     with transaction(db):
+        carrito_repo.locked_cliente(db, user_id)
         pago = repository.locked_pago(db, idPago)
         venta = repository.venta_de_pago(db, pago) if pago else None
         if pago is None or venta is None or venta.idusuariocl != user_id:
@@ -99,7 +101,19 @@ def reprocesar(db, idPago: int, data: PagoReprocesar, user_id: str, peer, pasare
         snapshot = (pago.idpago, pago.monto, pago.metodo, venta.nroventa, data.escenario)
     resultado = _cobrar(pasarela, snapshot)
     with transaction(db):
-        return _finalizar(db, snapshot[0], user_id, peer, resultado)
+        return _resolver_mock(db, snapshot[0], user_id, peer, resultado)
+
+
+def _resolver_mock(db, id_pago, user_id, peer, resultado):
+    try:
+        with db.begin_nested():
+            return _finalizar(db, id_pago, user_id, peer, resultado)
+    except DomainError as error:
+        if error.code not in {"disponibilidad_insuficiente", "carrito_modificado", "carrito_no_disponible"}:
+            raise
+        # The mock has not charged real money. Resolve the failed delivery
+        # atomically rather than leave a permanently "approved but pending" job.
+        return _finalizar(db, id_pago, user_id, peer, ResultadoPasarela("rechazado"))
 
 
 def _cobrar(pasarela, snapshot):
@@ -114,6 +128,7 @@ def _cobrar(pasarela, snapshot):
 
 
 def _finalizar(db, id_pago: int, user_id: str, peer, resultado: ResultadoPasarela | None):
+    carrito_repo.locked_cliente(db, user_id)
     pago = repository.locked_pago(db, id_pago)
     venta = repository.venta_de_pago(db, pago) if pago else None
     if pago is None or venta is None or venta.idusuariocl != user_id:
@@ -147,6 +162,9 @@ def _descontar(db, venta, user_id: str, peer):
         raise DomainError(409, "carrito_no_disponible",
                           "El carrito de esta venta ya no está activo")
     detalles = venta_repo.detalles(db, venta.nroventa)
+    actual = sorted((d.idvar, d.cantidad) for d in carrito_repo.cart_details(db, cart.idcarrito))
+    if actual != sorted((d.idvar, d.cantidad) for d in detalles):
+        raise DomainError(409, "carrito_modificado", "El carrito cambió desde la preparación de la compra")
     for detail in sorted(detalles, key=lambda d: d.idvar):
         filas = comercio_repo.locked_inventarios(db, detail.idvar, venta.nrosuc)
         if sum(r.cantdisp for r in filas) < detail.cantidad \

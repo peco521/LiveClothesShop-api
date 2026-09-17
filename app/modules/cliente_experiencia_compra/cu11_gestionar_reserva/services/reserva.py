@@ -9,9 +9,11 @@ from datetime import date
 
 from contextlib import contextmanager
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from app.core.database import is_postgresql, sqlstate
 from app.core.errors import DomainError
+from app.modules.cliente_experiencia_compra.shared.horarios import leer_dias
 from app.modules.cliente_experiencia_compra.cu11_gestionar_reserva.repositories import reserva as repository
 from app.modules.cliente_experiencia_compra.cu11_gestionar_reserva.schemas.reserva import (
     HorarioRango,
@@ -41,6 +43,12 @@ def transaction(db):
     except IntegrityError:
         db.rollback()
         raise DomainError(409, "conflicto_integridad", "Los datos entran en conflicto con un registro existente") from None
+    except DBAPIError as exc:
+        db.rollback()
+        if sqlstate(exc) == "P0001":
+            raise DomainError(409, "operacion_reserva_rechazada",
+                              "La reserva no pudo completarse con la disponibilidad actual") from None
+        raise
     except Exception:
         db.rollback()
         raise
@@ -55,7 +63,7 @@ def _sucursal(db, nroSuc):
     return branch
 
 
-def _validar_horario(db, nroSuc, hora):
+def _validar_horario(db, nroSuc, hora, fecha=None):
     """Exige hora dentro de los rangos declarados, solo si existen.
 
     Sin filas en horario_suc no puede determinarse inequívocamente si la
@@ -64,7 +72,7 @@ def _validar_horario(db, nroSuc, hora):
     rangos = comercio.horarios_sucursal(db, nroSuc)
     if not rangos:
         return None
-    if not any(r.horaini <= hora <= r.horafin for r in rangos):
+    if not any(r.horaini <= hora <= r.horafin and (fecha is None or fecha.isoweekday() in leer_dias(r.dias)) for r in rangos):
         raise DomainError(422, "horario_fuera_atencion",
                           "El horario solicitado está fuera de la atención de la sucursal")
     return rangos
@@ -139,17 +147,28 @@ def _detalle(db, row: Reserva, vencida: bool):
         sucursal=ReservaSucursal(nro=row.nrosuc,
                                  nombre=branch.nombre if branch else str(row.nrosuc),
                                  ciudad=city.nombre if city else ""),
-        items=items, totalUnidades=sum(d.cantidad for d in detalles), vencida=vencida)
+        items=items, totalUnidades=sum(d.cantidad for d in detalles),
+        vencida=vencida or row.estado == "vencida")
 
 
 def liberar_vencidas(db, user_id: str, hoy, peer):
-    """Libera pendientes propias con fecha pasada (cancelada + devuelve cantDisp).
+    """Marca reservas vencidas y devuelve su disponibilidad una sola vez.
 
-    Es la transición de vencimiento sin scheduler: se ejecuta de forma lazy al
-    consultar (listar/detalle/cancelar), acotada a las filas propias, idempotente
-    y dentro de la misma transacción de lectura. No hay estado 'vencida' en el
-    schema: se usa 'cancelada' + auditoría 'reserva_vencida'.
+    PostgreSQL usa el procedimiento oficial. SQLite mantiene una implementación
+    equivalente para las pruebas locales, ya que no implementa CALL.
     """
+    if is_postgresql(db):
+        anteriores = {row.nroreserva for row in
+                      repository.reservas_en_estado(db, user_id, "vencida")}
+        repository.vencer_con_procedimiento(db)
+        db.expire_all()
+        actuales = {row.nroreserva for row in
+                    repository.reservas_en_estado(db, user_id, "vencida")}
+        for _ in actuales - anteriores:
+            record(db, "reserva_vencida", user_id, peer, True)
+        return actuales
+
+    # Sustituto de CALL para las pruebas SQLite.
     liberadas: set[int] = set()
     for row in repository.vencidas(db, user_id, hoy):
         locked = repository.locked_reserva(db, row.nroreserva)
@@ -157,7 +176,7 @@ def liberar_vencidas(db, user_id: str, hoy, peer):
             continue
         detalles = repository.detalles(db, locked.nroreserva)
         _devolver_disponibilidad(db, locked.nrosuc, detalles)
-        locked.estado = "cancelada"
+        locked.estado = "vencida"
         record(db, "reserva_vencida", user_id, peer, True)
         liberadas.add(locked.nroreserva)
     return liberadas
@@ -170,16 +189,28 @@ def crear(db, data: ReservaCrear, user_id: str, peer):
     merged = _combinar_items(data.items)
     with transaction(db):
         branch = _sucursal(db, data.nroSuc)
-        _validar_horario(db, branch.nro, data.horaAtencion)
+        _validar_horario(db, branch.nro, data.horaAtencion, data.fechaReserva)
         _validar_variantes(db, merged)
-        _reservar_disponibilidad(db, branch.nro, merged)
-        row = repository.add_reserva(db, Reserva(
-            fechareserva=data.fechaReserva, horaatencion=data.horaAtencion,
-            estado="pendiente", nrosuc=branch.nro, idusuariocl=user_id))
-        for position, var_id in enumerate(sorted(merged), start=1):
-            repository.add_detalle(db, DetalleReserva(
-                nroreserva=row.nroreserva, iddetalleres=position,
-                cantidad=merged[var_id], idvar=var_id))
+        if is_postgresql(db):
+            var_ids = sorted(merged)
+            nro_reserva = repository.crear_con_procedimiento(
+                db, user_id=user_id, nro_suc=branch.nro,
+                fecha=data.fechaReserva, hora=data.horaAtencion,
+                id_vars=var_ids, cantidades=[merged[var] for var in var_ids])
+            db.expire_all()
+            row = repository.locked_reserva(db, nro_reserva)
+            if row is None:
+                raise DomainError(503, "reserva_no_disponible",
+                                  "No se pudo completar la reserva")
+        else:
+            _reservar_disponibilidad(db, branch.nro, merged)
+            row = repository.add_reserva(db, Reserva(
+                fechareserva=data.fechaReserva, horaatencion=data.horaAtencion,
+                estado="pendiente", nrosuc=branch.nro, idusuariocl=user_id))
+            for position, var_id in enumerate(sorted(merged), start=1):
+                repository.add_detalle(db, DetalleReserva(
+                    nroreserva=row.nroreserva, iddetalleres=position,
+                    cantidad=merged[var_id], idvar=var_id))
         record(db, "reserva_creada", user_id, peer, True)
         result = _detalle(db, row, vencida=False)
     return result
@@ -209,15 +240,23 @@ def cancelar(db, nroReserva: int, user_id: str, peer):
         row = repository.locked_reserva(db, nroReserva)
         if row is None or row.idusuariocl != user_id:
             raise DomainError(404, "reserva_no_encontrada", "Reserva no encontrada")
-        if row.nroreserva in liberadas or row.estado == "cancelada":
+        if row.nroreserva in liberadas or row.estado in ("cancelada", "vencida"):
             # Idempotente: una cancelación repetida (o ya vencida) no devuelve dos veces.
             return _detalle(db, row, vencida=row.nroreserva in liberadas)
         if row.estado != "pendiente":
             raise DomainError(409, "reserva_no_cancelable",
                               "La reserva ya no puede cancelarse")
-        detalles = repository.detalles(db, row.nroreserva)
-        _devolver_disponibilidad(db, row.nrosuc, detalles)
-        row.estado = "cancelada"
+        if is_postgresql(db):
+            repository.cancelar_con_procedimiento(db, row.nroreserva)
+            db.expire_all()
+            row = repository.locked_reserva(db, nroReserva)
+            if row is None:
+                raise DomainError(503, "reserva_no_disponible",
+                                  "No se pudo cancelar la reserva")
+        else:
+            detalles = repository.detalles(db, row.nroreserva)
+            _devolver_disponibilidad(db, row.nrosuc, detalles)
+            row.estado = "cancelada"
         record(db, "reserva_cancelada", user_id, peer, True)
         return _detalle(db, row, vencida=False)
 
@@ -236,4 +275,4 @@ def horarios_cliente(db, nroSuc: int):
         raise DomainError(404, "sucursal_no_encontrada", "Sucursal no encontrada")
     rangos = comercio.horarios_sucursal(db, nroSuc)
     return HorariosSucursal(nroSuc=nroSuc, rangos=[
-        HorarioRango(horaIni=r.horaini, horaFin=r.horafin) for r in rangos])
+        HorarioRango(horaIni=r.horaini, horaFin=r.horafin, dias=leer_dias(r.dias)) for r in rangos])

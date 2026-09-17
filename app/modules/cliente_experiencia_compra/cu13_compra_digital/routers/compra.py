@@ -8,6 +8,8 @@ from app.modules.cliente_experiencia_compra.cu13_compra_digital.schemas.compra i
 )
 from app.modules.cliente_experiencia_compra.cu13_compra_digital.services import compra as service
 from app.modules.cliente_experiencia_compra.shared.dependencies import require_cliente
+from app.core.errors import DomainError
+from app.modules.cliente_experiencia_compra.cu14_pago_electronico.services.checkout_stripe import cancel_sale
 
 router = APIRouter(prefix="/api/cliente/compras", tags=["Compra digital"],
                    dependencies=[Depends(require_cliente)])
@@ -27,7 +29,25 @@ def checkout(data: CompraCrear, request: Request, response: Response,
     return vista
 
 
+@router.get("/pendiente", response_model=VentaDetalle | None)
+def pending(db: Session = Depends(get_db), identity=Depends(require_cliente)):
+    from app.modules.cliente_experiencia_compra.cu12_carrito.repositories.carrito import active_cart
+    from app.modules.cliente_experiencia_compra.cu13_compra_digital.repositories.venta import registrada_por_carrito
+    cart = active_cart(db, identity.usuario.idUsuario)
+    venta = registrada_por_carrito(db, cart.idcarrito) if cart else None
+    return service._vista(db, venta) if venta else None
+
+
 @router.get("/{nroVenta}", response_model=VentaDetalle)
 def detail(nroVenta: int, db: Session = Depends(get_db),
            identity=Depends(require_cliente)):
     return service.detalle(db, nroVenta, identity.usuario.idUsuario)
+
+
+@router.post("/{nroVenta}/cancelar", response_model=VentaDetalle)
+def cancel(nroVenta: int, request: Request, db: Session = Depends(get_db), identity=Depends(require_cliente)):
+    try:
+        return cancel_sale(db, nroVenta, identity.usuario.idUsuario, peer(request),
+                           getattr(request.app.state, "stripe", None))
+    except RuntimeError:
+        raise DomainError(503, "pasarela_no_disponible", "No se pudo cancelar; consulta el estado del pago") from None

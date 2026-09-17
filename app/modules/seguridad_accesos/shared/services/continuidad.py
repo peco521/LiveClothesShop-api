@@ -6,7 +6,7 @@ def begin_change(db, actor_id, permission, public_role_id):
     repository.lock(db)
     # The request dependency ran before the lock, possibly before another commit.
     actor = repository.actor(db, actor_id)
-    if actor is None or not actor.activo:
+    if actor is None:
         raise DomainError(401, "autenticacion_rechazada", "No se pudo autenticar la solicitud")
     if not repository.has_permission(db, actor.nrorol, permission):
         raise DomainError(403, "acceso_denegado", "No tiene autorización para esta operación")
@@ -18,4 +18,4 @@ def ensure_remaining(db, before, public_role_id):
     # from some eligible users to none are forbidden; no role-name bypass.
     db.flush()
     if before > 0 and repository.eligible_count(db, public_role_id) == 0:
-        raise DomainError(409, "ultimo_usuario_cu06", "Debe conservar al menos un usuario activo con permiso CU06")
+        raise DomainError(409, "ultimo_usuario_cu06", "Debe conservar al menos un usuario con permiso CU06")

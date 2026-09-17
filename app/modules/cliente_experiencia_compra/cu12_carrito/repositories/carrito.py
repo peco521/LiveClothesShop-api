@@ -1,6 +1,6 @@
 """Consultas de carrito (CU12). Solo el carrito ACTIVO del propietario."""
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.modules.cliente_experiencia_compra.shared.models.comercio import Carrito, DetalleCarro
 from app.modules.seguridad_accesos.models import Cliente
@@ -68,3 +68,9 @@ def add_detail(db, row: DetalleCarro):
 def remove_detail(db, row: DetalleCarro):
     db.delete(row)
     db.flush()
+
+
+def agregar_con_procedimiento(db, user_id: str, id_var: str, cantidad: int):
+    db.execute(text("CALL sp_agregar_al_carrito(:user_id, :id_var, :cantidad)"), {
+        "user_id": user_id, "id_var": id_var, "cantidad": cantidad,
+    })

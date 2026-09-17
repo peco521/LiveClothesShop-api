@@ -7,8 +7,9 @@ Precios y promociones usan las mismas reglas del catálogo (shared precios).
 from contextlib import contextmanager
 from decimal import Decimal
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from app.core.database import is_postgresql, sqlstate
 from app.core.errors import DomainError
 from app.modules.cliente_experiencia_compra.cu11_gestionar_reserva.repositories import reserva as reserva_repo
 from app.modules.cliente_experiencia_compra.cu12_carrito.repositories import carrito as repository
@@ -26,6 +27,16 @@ from app.modules.cliente_experiencia_compra.shared.repositories import catalogo 
 from app.modules.cliente_experiencia_compra.shared.repositories import comercio as comercio_repo
 from app.modules.cliente_experiencia_compra.shared.services.precios import promocion_vigente
 from app.modules.seguridad_accesos.services.bitacora import record
+from app.modules.cliente_experiencia_compra.cu13_compra_digital.repositories import venta as venta_repo
+
+
+def _permitir_edicion(db, user_id):
+    # Same outer lock in checkout, payment and cart edits prevents lock inversion.
+    if repository.locked_cliente(db, user_id) is None:
+        raise DomainError(403, "acceso_denegado", "No tiene autorización para esta operación")
+    cart = repository.locked_active_cart(db, user_id)
+    if cart and venta_repo.registrada_por_carrito(db, cart.idcarrito):
+        raise DomainError(409, "compra_pendiente", "Cancela la compra pendiente antes de editar el carrito")
 
 
 @contextmanager
@@ -37,6 +48,12 @@ def transaction(db):
     except IntegrityError:
         db.rollback()
         raise DomainError(409, "conflicto_integridad", "Los datos entran en conflicto con un registro existente") from None
+    except DBAPIError as exc:
+        db.rollback()
+        if sqlstate(exc) == "P0001":
+            raise DomainError(409, "disponibilidad_insuficiente",
+                              "No hay disponibilidad suficiente para esta prenda") from None
+        raise
     except Exception:
         db.rollback()
         raise
@@ -116,8 +133,26 @@ def _activo_o_crear(db, user_id: str):
 
 def agregar(db, data: ItemAgregar, user_id: str, peer):
     with transaction(db):
-        cart = _activo_o_crear(db, user_id)
+        _permitir_edicion(db, user_id)
         variant, _ = _variante_activa(db, data.idVar)
+        if is_postgresql(db):
+            cart_previo = repository.active_cart(db, user_id)
+            ya_existia = (cart_previo is not None and
+                          repository.detail_by_variant(
+                              db, cart_previo.idcarrito, variant.idvariante) is not None)
+            repository.agregar_con_procedimiento(
+                db, user_id, variant.idvariante, data.cantidad)
+            # CALL modifica filas fuera del seguimiento del ORM.
+            db.expire_all()
+            cart = repository.active_cart(db, user_id)
+            if cart is None:  # Defensa ante una instalación incompleta de la BD.
+                raise DomainError(503, "carrito_no_disponible",
+                                  "No se pudo actualizar el carrito")
+            record(db, "carrito_item_actualizado" if ya_existia else
+                   "carrito_item_agregado", user_id, peer, True)
+            return _construir(db, cart)
+
+        cart = _activo_o_crear(db, user_id)
         detail = repository.detail_by_variant(db, cart.idcarrito, variant.idvariante)
         if detail is None:
             if data.cantidad > comercio_repo.disponibilidad_global(db, [variant.idvariante]).get(variant.idvariante, 0):
@@ -140,6 +175,7 @@ def agregar(db, data: ItemAgregar, user_id: str, peer):
 
 def modificar(db, idDetalle: int, data: ItemCantidad, user_id: str, peer):
     with transaction(db):
+        _permitir_edicion(db, user_id)
         cart = repository.locked_active_cart(db, user_id)
         if cart is None:
             raise DomainError(404, "item_no_encontrado", "Producto no encontrado en el carrito")
@@ -157,6 +193,7 @@ def modificar(db, idDetalle: int, data: ItemCantidad, user_id: str, peer):
 
 def eliminar(db, idDetalle: int, user_id: str, peer):
     with transaction(db):
+        _permitir_edicion(db, user_id)
         cart = repository.locked_active_cart(db, user_id)
         if cart is None:
             raise DomainError(404, "item_no_encontrado", "Producto no encontrado en el carrito")

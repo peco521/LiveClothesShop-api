@@ -258,11 +258,12 @@ def test_concurrencia_ultima_unidad(client, customer, registration, factory):
     assert client.post(BASE, json={"nroVenta": venta_a["nroVenta"], "metodo": "tarjeta"}).status_code == 201
     assert client.post("/api/auth/login", json=otro).status_code == 200
     respuesta_b = client.post(BASE, json={"nroVenta": venta_b["nroVenta"], "metodo": "tarjeta"})
-    assert respuesta_b.status_code == 409  # autorizado por el mock, sin stock: pendiente
+    assert respuesta_b.status_code == 201
+    assert respuesta_b.json()["estado"] == "rechazado"
     with factory() as db:
         pago_b = db.scalar(select(Pago).where(Pago.nroventa == venta_b["nroVenta"]))
-        assert pago_b.estado == "pendiente"
-        assert db.get(Venta, venta_b["nroVenta"]).estado == "registrada"
+        assert pago_b.estado == "rechazado"
+        assert db.get(Venta, venta_b["nroVenta"]).estado == "anulada"
     assert inventario(factory)[1] == (2, 0, 0)
 
 
@@ -271,7 +272,9 @@ def test_falta_stock_antes_de_aprobar(client, customer, factory):
     with factory.begin() as db:
         db.get(Inventario, 1).cantdisp = 0
         db.get(Inventario, 1).stock = 0
-    assert client.post(BASE, json={"nroVenta": venta["nroVenta"], "metodo": "tarjeta"}).status_code == 409
+    response = client.post(BASE, json={"nroVenta": venta["nroVenta"], "metodo": "tarjeta"})
+    assert response.status_code == 201
+    assert response.json()["estado"] == "rechazado"
 
 
 def test_varias_filas_greedy(client, customer, factory):

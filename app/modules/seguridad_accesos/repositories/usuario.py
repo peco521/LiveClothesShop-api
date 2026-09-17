@@ -1,4 +1,4 @@
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.modules.seguridad_accesos.models import Usuario
 
@@ -16,3 +16,27 @@ def locked(db, user_id):
 def add(db, usuario):
     db.add(usuario)
     db.flush()
+
+
+def registrar_cliente(db, *, user_id, ci, nombre, apellido_pat, apellido_mat,
+                      sexo, correo, telefono, direccion, password_hash,
+                      fecha_nac, role_id, client_code):
+    db.execute(text("""
+        CALL sp_registrar_cliente(
+          :user_id, :ci, :nombre, :apellido_pat, :apellido_mat, :sexo,
+          :correo, :telefono, :direccion, :password_hash, :fecha_nac,
+          :role_id, :client_code
+        )
+    """), {
+        "user_id": user_id, "ci": ci, "nombre": nombre,
+        "apellido_pat": apellido_pat, "apellido_mat": apellido_mat,
+        "sexo": sexo, "correo": correo, "telefono": telefono,
+        "direccion": direccion, "password_hash": password_hash,
+        "fecha_nac": fecha_nac, "role_id": role_id, "client_code": client_code,
+    })
+
+
+def cambiar_contrasena(db, correo: str, password_hash: str):
+    db.execute(text("CALL sp_cambiar_contrasena(:correo, :password_hash)"), {
+        "correo": correo, "password_hash": password_hash,
+    })

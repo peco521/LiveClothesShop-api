@@ -1,11 +1,10 @@
 from datetime import date
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, EmailStr, Field, StrictBool, StringConstraints, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, EmailStr, Field, StringConstraints, field_validator, model_validator
 
 from app.modules.seguridad_accesos.schemas.auth import PublicInput, Registro, RolResponse, normalize_email
 
-Code = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=10)]
 RoleId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=15)]
 Text50 = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
 Text100 = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
@@ -14,14 +13,13 @@ BranchId = Annotated[int, Field(strict=True, ge=-2147483648, le=2147483647)]
 
 class EmpleadoCrear(Registro):
     nroRol: RoleId
-    cod_emp: Code
     cargo: Text50
     nroSuc: BranchId
 
 
 class EmpleadoEditar(PublicInput):
     ci: Text100 | None = None
-    nombres: Text100 | None = None
+    nombre: Text100 | None = Field(None, validation_alias=AliasChoices("nombres", "nombre"))
     apellidoPat: Text50 | None = None
     apellidoMat: Text50 | None = None
     sexo: Literal["M", "F"] | None = None
@@ -30,7 +28,6 @@ class EmpleadoEditar(PublicInput):
     direccion: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)] | None = None
     fechaNac: date | None = None
     nroRol: RoleId | None = None
-    cod_emp: Code | None = None
     cargo: Text50 | None = None
     nroSuc: BranchId | None = None
 
@@ -50,10 +47,6 @@ class EmpleadoEditar(PublicInput):
         return self
 
 
-class UsuarioEstado(PublicInput):
-    activo: StrictBool
-
-
 class EmpleadoPerfil(BaseModel):
     cod_emp: str
     cargo: str
@@ -67,7 +60,7 @@ class AdminPerfil(BaseModel):
 class UsuarioDetalle(BaseModel):
     idUsuario: str
     ci: str
-    nombres: str | None
+    nombre: str | None = Field(validation_alias=AliasChoices("nombre", "nombres"), serialization_alias="nombres")
     apellidoPat: str
     apellidoMat: str
     sexo: Literal["M", "F"]
@@ -76,7 +69,6 @@ class UsuarioDetalle(BaseModel):
     direccion: str
     fechaNac: date
     tipo: Literal["A", "E"]
-    activo: bool
     nroRol: str
     rol: RolResponse
     empleado: EmpleadoPerfil | None

@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request, Response
 from pydantic import ValidationError
 
 from app.core.config import Settings
+from app.core.access_tokens import AccessTokens
 from app.core.database import create_database
 from app.core.errors import error_response, register_handlers
 from app.core.security import Passwords
@@ -20,8 +21,16 @@ from app.modules.cliente_experiencia_compra.cu11_gestionar_reserva.routers.sucur
 from app.modules.cliente_experiencia_compra.cu12_carrito.routers.carrito import router as cu12_router
 from app.modules.cliente_experiencia_compra.cu13_compra_digital.routers.compra import router as cu13_router
 from app.modules.cliente_experiencia_compra.cu14_pago_electronico.routers.pago import router as cu14_router
+from app.modules.cliente_experiencia_compra.cu15_historial_compra.routers.historial import router as cu15_router
+from app.modules.cliente_experiencia_compra.cu15_historial_compra.routers.administracion import router as cu15_admin_router
 from app.integrations.payments.mock import PasarelaMock
+from app.modules.inventario_productos.cu18_gestionar_catalogo.routers.catalogo import router as cu18_router
+from app.modules.inventario_productos.cu19_gestionar_proveedores.routers.proveedor import router as cu19_router
+from app.modules.inventario_productos.cu20_gestionar_inventario.routers.inventario import router as cu20_router
 from app.integrations.payments.protocolo import PasarelaPagos
+from app.integrations.gmail import configured_gmail_delivery
+from app.integrations.payments.stripe_checkout import StripeCheckout
+from app.modules.cliente_experiencia_compra.cu14_pago_electronico.routers.stripe import router as stripe_router
 
 
 def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryDelivery | None = None,
@@ -34,20 +43,32 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
             # Do not print environment values from Pydantic's input diagnostics.
             raise RuntimeError("Configuración inválida: revise las variables de entorno requeridas") from None
         application.state.settings = config
-        application.state.passwords = Passwords()
-        # Explicit composition only. No implicit console/file/dev token delivery.
-        application.state.recovery_delivery = recovery_delivery
+        application.state.passwords = Passwords(config.password_storage)
+        application.state.access_tokens = AccessTokens()
         # Pasarela de pago mock por defecto; inyectable en tests. Sin pasarelas reales.
         application.state.pasarela = pasarela if pasarela is not None else PasarelaMock()
+        application.state.stripe = None
+        if config.payments_provider == "stripe":
+            try:
+                application.state.stripe = StripeCheckout(
+                    config.stripe_secret_key.get_secret_value(), config.stripe_webhook_secret.get_secret_value(),
+                    config.stripe_currency, config.payments_frontend_url)
+            except ValueError:
+                raise RuntimeError("Configuración Stripe inválida: revise claves de prueba, moneda y webhook") from None
         engine = None
         if session_factory is None:
             engine, factory = create_database(config.database_url.get_secret_value())
         else:
             factory = session_factory
         application.state.session_factory = factory
+        owned_delivery = configured_gmail_delivery(config) if recovery_delivery is None else None
+        application.state.recovery_delivery = recovery_delivery if recovery_delivery is not None else owned_delivery
         try:
             yield
         finally:
+            if owned_delivery is not None:
+                owned_delivery.close()
+            application.state.access_tokens.clear()
             if engine is not None:
                 engine.dispose()
 
@@ -69,7 +90,10 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
                       for prefix in ("/api/admin/ciudades", "/api/admin/sucursales"))
         is_catalogo = request.url.path == "/api/catalogo" or request.url.path.startswith("/api/catalogo/")
         is_cliente = request.url.path == "/api/cliente" or request.url.path.startswith("/api/cliente/")
-        protected = is_auth or is_cu05 or is_cu06 or is_cu07 or is_cu08 or is_cu09 or is_catalogo or is_cliente
+        is_cu15_admin = request.url.path == "/api/admin/historial-compras" or request.url.path.startswith("/api/admin/historial-compras/")
+        is_inventario_productos = any(request.url.path == prefix or request.url.path.startswith(prefix + '/')
+                                     for prefix in ('/api/admin/catalogo', '/api/admin/proveedores', '/api/admin/inventario'))
+        protected = is_auth or is_cu05 or is_cu06 or is_cu07 or is_cu08 or is_cu09 or is_catalogo or is_cliente or is_cu15_admin or is_inventario_productos
         # Nativo móvil: Authorization Bearer sin cookie no usa defensa CSRF de
         # cookie (el token no se adjunta automáticamente). Con cookie presente
         # se mantiene Origin + cabecera; cookie+bearer se rechaza en dependencias.
@@ -84,7 +108,8 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
                 return error_response(403, "origen_no_permitido", "Solicitud no permitida")
             response = Response(status_code=204)
             response.headers["Access-Control-Allow-Methods"] = (
-                "GET, OPTIONS" if is_cu08 else
+                "GET, POST, PUT, DELETE, OPTIONS" if is_inventario_productos else
+                "GET, OPTIONS" if is_cu08 or is_cu15_admin else
                 "GET, POST, PATCH, PUT, OPTIONS" if is_cu06 else
                 "GET, POST, PATCH, DELETE, OPTIONS" if is_cliente else
                 "GET, POST, PATCH, OPTIONS" if is_cu05 or is_cu09 else
@@ -126,6 +151,12 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
     application.include_router(cu12_router)
     application.include_router(cu13_router)
     application.include_router(cu14_router)
+    application.include_router(stripe_router)
+    application.include_router(cu15_router)
+    application.include_router(cu15_admin_router)
+    application.include_router(cu18_router)
+    application.include_router(cu19_router)
+    application.include_router(cu20_router)
     return application
 
 

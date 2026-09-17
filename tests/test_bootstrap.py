@@ -65,7 +65,7 @@ def test_creation_and_repeat(empty_factory, data, passwords):
     with empty_factory() as db:
         user = db.scalar(select(Usuario))
         encoded = user.contrasena
-        assert user.tipo == "A" and user.nrorol == "superadmin" and user.activo
+        assert user.tipo == "A" and user.nrorol == "superadmin"
         assert encoded != data.contrasena.get_secret_value()
         assert encoded.startswith("$argon2id$")
         assert passwords.verify(encoded, data.contrasena.get_secret_value())
@@ -82,7 +82,7 @@ def test_creation_and_repeat(empty_factory, data, passwords):
         assert db.scalar(select(Usuario.contrasena)) == encoded
 
 
-@pytest.mark.parametrize("kind", ["C", "E", "wrong_role", "missing_admin", "code", "cliente_profile", "empleado_profile", "inactive"])
+@pytest.mark.parametrize("kind", ["C", "E", "wrong_role", "missing_admin", "code", "cliente_profile", "empleado_profile"])
 def test_incompatible_or_partial_aborts(empty_factory, data, passwords, kind):
     run(empty_factory, data, passwords)
     with empty_factory.begin() as db:
@@ -103,8 +103,6 @@ def test_incompatible_or_partial_aborts(empty_factory, data, passwords, kind):
             db.add(Sucursal(nro=1, nombre="Sucursal de prueba", direccion="Prueba", idciud=1))
             db.flush()
             db.add(Empleado(idusuario=user.idusuario, cod_emp="EMP001", cargo="Prueba", nrosuc=1))
-        else:
-            user.activo = False
     with empty_factory() as db:
         before = tuple(db.execute(select(Usuario.__table__)).one())
         profile_before = db.scalar(select(Admin.cod_adm))
@@ -253,7 +251,7 @@ def test_pg_lock_contract_without_connection():
 
 def mock_prompts(monkeypatch, data, confirmation=None):
     values = data.model_dump()
-    fields = ["correo", "ci", "nombres", "apellidoPat", "apellidoMat", "sexo",
+    fields = ["correo", "ci", "nombre", "apellidoPat", "apellidoMat", "sexo",
               "telefono", "direccion", "fechaNac", "cod_adm"]
     inputs = Mock(side_effect=[str(values[field]) for field in fields])
     secret = data.contrasena.get_secret_value()
@@ -479,7 +477,8 @@ def test_catalog_login_identity_uses_assignments(empty_factory, data, passwords,
     run_catalog(empty_factory)
     credentials = Login(correo=data.correo, contrasena=data.contrasena)
     with empty_factory() as db:
-        identity, _ = login(db, credentials, settings, passwords, None)
+        from app.core.access_tokens import AccessTokens
+        identity, _ = login(db, credentials, settings, passwords, None, AccessTokens())
     assert identity.permisos == [code for code, _ in INITIAL_PERMISSIONS]
     for code, _ in INITIAL_PERMISSIONS:
         assert require_permission(code)(identity) is identity
@@ -489,6 +488,6 @@ def test_catalog_login_identity_uses_assignments(empty_factory, data, passwords,
     with empty_factory.begin() as db:
         db.delete(db.get(RolFuncion, ("superadmin", "CU05")))
     with empty_factory() as db:
-        identity, _ = login(db, credentials, settings, passwords, None)
+        identity, _ = login(db, credentials, settings, passwords, None, AccessTokens())
     with pytest.raises(DomainError):
         require_permission("CU05")(identity)

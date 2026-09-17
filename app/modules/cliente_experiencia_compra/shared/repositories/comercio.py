@@ -18,7 +18,7 @@ def locked_inventario(db, idVar: str, nroSuc: int):
 
 def horarios_sucursal(db, nroSuc: int):
     """Rangos [horaIni, horaFin] declarados para la sucursal (solo lectura)."""
-    return list(db.scalars(select(HorarioAtencion)
+    return list(db.execute(select(HorarioAtencion.horaini, HorarioAtencion.horafin, HorarioSuc.dias)
                            .join(HorarioSuc, HorarioSuc.idaten == HorarioAtencion.idaten)
                            .where(HorarioSuc.nrosuc == nroSuc)
                            .order_by(HorarioAtencion.horaini)).all())

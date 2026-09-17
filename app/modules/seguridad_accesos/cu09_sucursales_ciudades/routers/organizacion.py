@@ -2,6 +2,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query, Request
 from sqlalchemy.orm import Session
+from sqlalchemy import select, func
+from app.modules.cliente_experiencia_compra.shared.models.comercio import HorarioAtencion
+from app.modules.seguridad_accesos.cu09_sucursales_ciudades.schemas.organizacion import HorarioSugerencia
 
 from app.core.database import get_db
 from app.core.dependencies import require_permission
@@ -45,6 +48,14 @@ def edit_city(id: CityPath, data: CiudadEditar, request: Request, db: Session = 
 @router.get("/sucursales", response_model=SucursalesListado)
 def list_branches(filters: Annotated[SucursalesFiltros, Query()], db: Session = Depends(get_db)):
     return service.list_branches(db, filters)
+
+
+@router.get("/sucursales/horarios-sugeridos", response_model=list[HorarioSugerencia])
+def suggested_hours(db: Session = Depends(get_db)):
+    rows = db.execute(select(func.min(HorarioAtencion.idaten), HorarioAtencion.horaini, HorarioAtencion.horafin)
+                      .group_by(HorarioAtencion.horaini, HorarioAtencion.horafin)
+                      .order_by(HorarioAtencion.horaini, HorarioAtencion.horafin)).all()
+    return [HorarioSugerencia(idAten=id, horaIni=start, horaFin=end) for id, start, end in rows]
 
 
 @router.post("/sucursales", response_model=SucursalDetalle, status_code=201)

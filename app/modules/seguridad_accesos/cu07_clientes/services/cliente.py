@@ -4,7 +4,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.errors import DomainError
 from app.core.security import utcnow
-from app.modules.seguridad_accesos.repositories import recuperacion_contrasena, rol, sesion, usuario
+from app.modules.seguridad_accesos.repositories import recuperacion_contrasena, rol, usuario
 from app.modules.seguridad_accesos.services.bitacora import record
 from app.modules.seguridad_accesos.shared.repositories import continuidad
 from app.modules.seguridad_accesos.schemas.auth import RolResponse
@@ -13,7 +13,7 @@ from app.modules.seguridad_accesos.cu07_clientes.schemas.cliente import (
     ClienteDetalle, ClientePerfil, ClientesListado,
 )
 
-USER_FIELDS = {"ci": "ci", "nombres": "nombres", "apellidoPat": "apellidopat",
+USER_FIELDS = {"ci": "ci", "nombre": "nombre", "apellidoPat": "apellidopat",
                "apellidoMat": "apellidomat", "sexo": "sexo", "correo": "correo",
                "telefono": "telefono", "direccion": "direccion", "fechaNac": "fechanac"}
 
@@ -62,7 +62,7 @@ def detail(db, user, role):
         raise incoherent()
     return ClienteDetalle(
         idUsuario=user.idusuario, **{key: getattr(user, column) for key, column in USER_FIELDS.items()},
-        tipo="C", activo=user.activo, nroRol=user.nrorol,
+        tipo="C", nroRol=user.nrorol,
         rol=RolResponse(nro=role.nro, descripcion=role.descripcion),
         cliente=ClientePerfil(cod_cl=client.cod_cl, estado=client.estado),
     )
@@ -92,7 +92,7 @@ def revalidate_actor(db, actor_id):
     # Fresh identity/permission reads AFTER target/public-role lock waits.
     # These shared read helpers do not acquire the CU06 continuity lock.
     actor = continuidad.actor(db, actor_id)
-    if actor is None or not actor.activo:
+    if actor is None:
         raise DomainError(401, "autenticacion_rechazada", "No se pudo autenticar la solicitud")
     if not continuidad.has_permission(db, actor.nrorol, "CU07"):
         raise DomainError(403, "acceso_denegado", "No tiene autorización para esta operación")
@@ -117,22 +117,5 @@ def edit(db, user_id, data, settings, actor_id, peer):
             recuperacion_contrasena.invalidate(db, user_id, utcnow())
         if changes:
             record(db, "cliente_actualizado", actor_id, peer, True)
-        result = detail(db, user, role)
-    return result
-
-
-def set_state(db, user_id, data, settings, actor_id, peer):
-    with transaction(db):
-        user = get(db, user_id, lock=True)
-        role = public_role(db, settings)
-        detail(db, user, role)
-        revalidate_actor(db, actor_id)
-        if user.activo != data.activo:
-            user.activo = data.activo
-            if not data.activo:
-                now = utcnow()
-                sesion.revoke_all(db, user_id, now)
-                recuperacion_contrasena.invalidate(db, user_id, now)
-            record(db, "cliente_activado" if data.activo else "cliente_desactivado", actor_id, peer, True)
         result = detail(db, user, role)
     return result

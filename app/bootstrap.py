@@ -16,7 +16,7 @@ from app.modules.seguridad_accesos.services.bootstrap import provision_initial_p
 
 def prompt_superadmin():
     fields = (
-        ("correo", "Correo"), ("ci", "CI"), ("nombres", "Nombres"),
+        ("correo", "Correo"), ("ci", "CI"), ("nombre", "Nombre"),
         ("apellidoPat", "Apellido paterno"), ("apellidoMat", "Apellido materno"),
         ("sexo", "Sexo (M/F)"), ("telefono", "Teléfono"), ("direccion", "Dirección"),
         ("fechaNac", "Fecha de nacimiento (AAAA-MM-DD)"), ("cod_adm", "cod_adm"),
@@ -42,7 +42,7 @@ def main(argv=None):
     try:
         data = prompt_superadmin() if args.crear_superadmin else None
         settings = Settings()
-        passwords = Passwords() if data is not None else None
+        passwords = Passwords(settings.password_storage) if data is not None else None
         engine, factory = create_database(settings.database_url.get_secret_value())
         try:
             with factory() as db:

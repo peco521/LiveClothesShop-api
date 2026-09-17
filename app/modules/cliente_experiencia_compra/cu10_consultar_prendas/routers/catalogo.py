@@ -48,7 +48,7 @@ _FACETAS = ("categorias", "marcas", "colecciones", "temporadas", "tallas", "colo
 
 
 @router.get("/{grupo}", response_model=FacetasListado)
-def facet_list(grupo: str, db: Session = Depends(get_db)):
+def facet_list(grupo: str, idCat: int | None = Query(None, ge=1), db: Session = Depends(get_db)):
     if grupo not in _FACETAS:
         raise DomainError(404, "faceta_no_encontrada", "Filtro no encontrado")
-    return catalogo.facets(db, grupo)
+    return catalogo.facets(db, grupo, idCat=idCat)

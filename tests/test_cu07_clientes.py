@@ -1,4 +1,5 @@
 """CU07 HTTP/domain regression: injected SQLite only, no real provisioning."""
+from contextlib import closing
 import json
 from datetime import timedelta
 from unittest.mock import Mock
@@ -13,7 +14,7 @@ from sqlalchemy.schema import CreateTable
 from app.core.errors import DomainError
 from app.core.security import digest, utcnow
 from app.modules.seguridad_accesos.models import (
-    Admin, Bitacora, Cliente, Funcion, RecuperacionContrasena, Rol, RolFuncion, Sesion, Usuario,
+    Admin, Bitacora, Cliente, Funcion, RecuperacionContrasena, Rol, RolFuncion, Usuario,
 )
 from app.modules.seguridad_accesos.cu05_usuarios_empleados.models import Empleado
 from app.modules.seguridad_accesos.shared.models import Ciudad, Sucursal
@@ -24,8 +25,7 @@ from app.modules.seguridad_accesos.repositories import recuperacion_contrasena, 
 from app.modules.seguridad_accesos.services import auth
 
 BASE = "/api/admin/clientes"
-ROUTES = [("GET", BASE), ("GET", BASE + "/missing"), ("PATCH", BASE + "/missing"),
-          ("PATCH", BASE + "/missing/estado-cuenta")]
+ROUTES = [("GET", BASE), ("GET", BASE + "/missing"), ("PATCH", BASE + "/missing")]
 
 
 @pytest.fixture
@@ -61,18 +61,15 @@ def seed_credentials(factory, user_id):
     now = utcnow()
     with factory.begin() as db:
         for i in range(2):
-            db.add(Sesion(usuario_id=user_id, credencial_digest=digest(f"synthetic-session-{i}"),
-                          creada_en=now, expira_en=now + timedelta(hours=1)))
             db.add(RecuperacionContrasena(usuario_id=user_id, token_digest=digest(f"synthetic-recovery-{i}"),
                                          creada_en=now, expira_en=now + timedelta(hours=1)))
 
 
 def credential_states(factory, user_id):
     with factory() as db:
-        sessions = list(db.scalars(select(Sesion.revocada_en).where(Sesion.usuario_id == user_id)))
         recovery = list(db.scalars(select(RecuperacionContrasena.utilizada_en).where(
             RecuperacionContrasena.usuario_id == user_id)))
-        return sessions, recovery
+        return recovery
 
 
 @pytest.mark.parametrize("method,path", ROUTES)
@@ -106,7 +103,6 @@ def test_cu07_only_and_no_cu06_catalog_dependency(client, operator, customer, fa
     assert client.get("/api/admin/usuarios").status_code == 403
     assert client.get("/api/admin/roles").status_code == 403
     assert client.patch(BASE + "/" + customer["idUsuario"], json={"telefono": "123"}).status_code == 200
-    assert client.patch(BASE + "/" + customer["idUsuario"] + "/estado-cuenta", json={"activo": False}).status_code == 200
 
 
 def test_list_pagination_search_and_literal_wildcards(client, customer, registration):
@@ -120,11 +116,10 @@ def test_list_pagination_search_and_literal_wildcards(client, customer, registra
         assert client.get(BASE, params={"q": q}).json()["total"] >= 1
     for q in ("%", "_", "missing"):
         assert client.get(BASE, params={"q": q}).json()["total"] == 0
-    assert client.get(BASE + "?activo=false").json()["total"] == 0
-    assert client.get(BASE + "?activo=true").json()["total"] == 2
+    assert all("activo" not in row for row in result["items"])
 
 
-@pytest.mark.parametrize("params", [{"offset": -1}, {"limit": 0}, {"limit": 101}, {"q": "x" * 101}, {"activo": "invalid"}])
+@pytest.mark.parametrize("params", [{"offset": -1}, {"limit": 0}, {"limit": 101}, {"q": "x" * 101}])
 def test_query_validation(client, operator, params):
     assert client.get(BASE, params=params).status_code == 422
 
@@ -132,7 +127,7 @@ def test_query_validation(client, operator, params):
 def test_registered_detail_and_no_admin_or_missing_target(client, customer, operator):
     assert customer["cliente"]["estado"] == "frecuente"
     assert len(customer["cliente"]["cod_cl"]) == 10
-    assert customer["activo"] is True and customer["rol"]["nro"] == "cliente"
+    assert "activo" not in customer and customer["rol"]["nro"] == "cliente"
     for target in (operator, "missing"):
         path = BASE + "/" + target
         assert client.get(path).status_code == 404
@@ -149,7 +144,7 @@ def test_personal_fields_edit_and_specific_audit(client, customer, operator, fac
     assert result.status_code == 200
     expected = body | {"nombres": "Nuevo", "correo": "nuevo@example.com"}
     assert all(result.json()[k] == v for k, v in expected.items())
-    for key in ("tipo", "nroRol", "rol", "activo", "cliente", "idUsuario"):
+    for key in ("tipo", "nroRol", "rol", "cliente", "idUsuario"):
         assert result.json()[key] == customer[key]
     assert audit(factory)[-1] == ("cliente_actualizado", operator, {"resultado": "exito"})
 
@@ -174,13 +169,13 @@ def test_edit_allowlist_and_rollback(client, customer, factory, body):
 
 @pytest.mark.parametrize("body", [{}, {"activo": None}, {"activo": "false"}, {"activo": 0},
                                    {"activo": False, "estado": "inactivo"}])
-def test_state_strict_boolean(client, customer, body):
-    assert client.patch(BASE + "/" + customer["idUsuario"] + "/estado-cuenta", json=body).status_code == 422
+def test_state_endpoint_retired_for_all_payloads(client, customer, body):
+    assert client.patch(BASE + "/" + customer["idUsuario"] + "/estado-cuenta", json=body).status_code == 404
 
 
 def test_nullable_legacy_names_and_nonunique_ci_code(client, customer, factory, registration):
     with factory.begin() as db:
-        db.get(Usuario, customer["idUsuario"]).nombres = None
+        db.get(Usuario, customer["idUsuario"]).nombre = None
     path = BASE + "/" + customer["idUsuario"]
     assert client.get(path).json()["nombres"] is None
     assert client.patch(path, json={"telefono": "999"}).json()["nombres"] is None
@@ -206,12 +201,13 @@ def test_global_normalized_email_uniqueness(client, customer, factory, operator,
 def test_email_change_invalidates_recovery_not_sessions_and_new_login(client, customer, factory, registration, app):
     user_id = customer["idUsuario"]
     seed_credentials(factory, user_id)
-    assert client.patch(BASE + "/" + user_id, json={"correo": " NUEVO@EXAMPLE.COM "}).status_code == 200
-    sessions, recoveries = credential_states(factory, user_id)
-    assert all(value is None for value in sessions) and all(value is not None for value in recoveries)
-    with TestClient(app) as other:
+    with closing(TestClient(app)) as other:
         other.headers.update({"Origin": "http://localhost:4200", "X-CSRF-Protection": "1"})
         login = {"correo": "cliente@example.com", "contrasena": registration["contrasena"]}
+        assert other.post("/api/auth/login", json=login).status_code == 200
+        assert client.patch(BASE + "/" + user_id, json={"correo": " NUEVO@EXAMPLE.COM "}).status_code == 200
+        assert all(value is not None for value in credential_states(factory, user_id))
+        assert other.get("/api/auth/me").status_code == 200
         assert other.post("/api/auth/login", json=login).status_code == 401
         assert other.post("/api/auth/login", json=login | {"correo": " NUEVO@EXAMPLE.COM "}).status_code == 200
 
@@ -228,55 +224,33 @@ def test_noop_no_dml_audit_or_credential_invalidation(client, customer, factory)
     event.listen(engine, "before_cursor_execute", capture)
     try:
         assert client.patch(BASE + "/" + user_id, json={"correo": " CLIENTE@EXAMPLE.COM "}).status_code == 200
-        assert client.patch(BASE + "/" + user_id + "/estado-cuenta", json={"activo": True}).status_code == 200
     finally:
         event.remove(engine, "before_cursor_execute", capture)
     assert statements == [] and audit(factory) == before
-    assert credential_states(factory, user_id) == ([None, None], [None, None])
+    assert credential_states(factory, user_id) == [None, None]
 
 
-def test_deactivation_reactivation_revokes_all_without_restoration(client, customer, factory, operator):
+def test_retired_account_state_does_not_modify_data_or_recoveries(client, customer, factory, operator):
     user_id = customer["idUsuario"]
     seed_credentials(factory, user_id)
-    path = BASE + "/" + user_id + "/estado-cuenta"
-    assert client.patch(path, json={"activo": False}).json()["activo"] is False
-    states = credential_states(factory, user_id)
-    assert all(value is not None for group in states for value in group)
-    assert client.get(BASE + "?activo=false").json()["total"] == 1
     before = audit(factory)
-    assert client.patch(path, json={"activo": False}).status_code == 200
+    path = BASE + "/" + user_id + "/estado-cuenta"
+    for active in (False, True):
+        assert client.patch(path, json={"activo": active}).status_code == 404
+    assert client.get(BASE + "/" + user_id).json() == customer
+    assert credential_states(factory, user_id) == [None, None]
     assert audit(factory) == before
-    assert client.patch(path, json={"activo": True}).json()["activo"] is True
-    assert credential_states(factory, user_id) == states
-    assert audit(factory)[-2:] == [("cliente_desactivado", operator, {"resultado": "exito"}),
-                                  ("cliente_activado", operator, {"resultado": "exito"})]
-    with factory() as db:
-        assert db.get(Usuario, user_id) is not None and db.get(Cliente, user_id) is not None
 
 
-def test_actual_session_and_recovery_rejected_after_deactivation_and_reactivation(client, customer, factory, app, registration):
-    class Delivery:
-        def dispatch(self, email, token, expires):
-            self.token = token
-    delivery = Delivery()
-    app.state.recovery_delivery = delivery
-    with TestClient(app) as other:
+def test_password_change_invalidates_customer_access(client, customer, factory, app, registration):
+    with closing(TestClient(app)) as other:
         other.headers.update({"Origin": "http://localhost:4200", "X-CSRF-Protection": "1"})
-        # The nested lifespan sets delivery from composition; inject the fake explicitly.
-        app.state.recovery_delivery = delivery
         login = {"correo": "cliente@example.com", "contrasena": registration["contrasena"]}
         assert other.post("/api/auth/login", json=login).status_code == 200
-        assert other.post("/api/auth/recuperar-contrasena", json={"correo": login["correo"]}).status_code == 202
-        path = BASE + "/" + customer["idUsuario"] + "/estado-cuenta"
-        for active in (False, True):
-            assert client.patch(path, json={"activo": active}).status_code == 200
-            assert other.get("/api/auth/me").status_code == 401
-            response = other.post("/api/auth/restablecer-contrasena", json={
-                "token": delivery.token, "nueva_contrasena": registration["contrasena"]})
-            assert response.status_code == 400
-            if not active:
-                assert other.post("/api/auth/login", json=login).status_code == 401
-        assert other.post("/api/auth/login", json=login).status_code == 200
+        with factory.begin() as db:
+            db.get(Usuario, customer["idUsuario"]).contrasena = app.state.passwords.hash("Otra contraseña de prueba")
+        assert other.get("/api/auth/me").status_code == 401
+        assert client.get(BASE).status_code == 200
 
 
 @pytest.mark.parametrize("commercial_state", ["frecuente", "casual", "inactivo"])
@@ -285,9 +259,7 @@ def test_commercial_state_is_readonly_and_does_not_block_login(client, customer,
         db.get(Cliente, customer["idUsuario"]).estado = commercial_state
     path = BASE + "/" + customer["idUsuario"]
     assert client.get(path).json()["cliente"]["estado"] == commercial_state
-    assert client.patch(path + "/estado-cuenta", json={"activo": False}).json()["cliente"]["estado"] == commercial_state
-    assert client.patch(path + "/estado-cuenta", json={"activo": True}).json()["cliente"]["estado"] == commercial_state
-    with TestClient(app) as other:
+    with closing(TestClient(app)) as other:
         other.headers.update({"Origin": "http://localhost:4200", "X-CSRF-Protection": "1"})
         assert other.post("/api/auth/login", json={"correo": "cliente@example.com", "contrasena": registration["contrasena"]}).status_code == 200
 
@@ -298,9 +270,7 @@ def test_proportions_never_exposed_or_changed(client, customer, factory, proport
     with factory.begin() as db:
         db.get(Cliente, user_id).proporciones = proportions
     path = BASE + "/" + user_id
-    responses = [client.get(BASE), client.get(path), client.patch(path, json={"telefono": "222"}),
-                 client.patch(path + "/estado-cuenta", json={"activo": False}),
-                 client.patch(path + "/estado-cuenta", json={"activo": True})]
+    responses = [client.get(BASE), client.get(path), client.patch(path, json={"telefono": "222"})]
     assert all(r.status_code == 200 and "proporciones" not in r.text for r in responses)
     assert client.patch(path, json={"proporciones": proportions}).status_code == 422
     with factory() as db:
@@ -337,13 +307,11 @@ def test_incoherent_profiles_and_roles_controlled_no_repair(client, customer, fa
             app.state.settings.cliente_rol_id = "missing"
     before = audit(factory)
     path = BASE + "/" + user_id
-    for response in (client.get(BASE), client.get(path), client.patch(path, json={"nombres": "No persistir"}),
-                     client.patch(path + "/estado-cuenta", json={"activo": False})):
+    for response in (client.get(BASE), client.get(path), client.patch(path, json={"nombres": "No persistir"})):
         assert response.status_code == 409 and response.json()["error"]["code"] == "perfil_incoherente"
     assert audit(factory) == before
     with factory() as db:
-        assert db.get(Usuario, user_id).nombres == customer["nombres"]
-        assert db.get(Usuario, user_id).activo is True
+        assert db.get(Usuario, user_id).nombre == customer["nombres"]
         if kind == "missing_client":
             assert db.get(Cliente, user_id) is None
 
@@ -369,10 +337,9 @@ def test_configurable_public_role_not_literal(client, customer, factory, app):
     assert client.get(path).json()["nroRol"] == "publico-custom"
     assert client.get(BASE).status_code == 200
     assert client.patch(path, json={"telefono": "333"}).status_code == 200
-    assert client.patch(path + "/estado-cuenta", json={"activo": False}).status_code == 200
 
 
-@pytest.mark.parametrize("operation", ["edit", "email", "state"])
+@pytest.mark.parametrize("operation", ["edit", "email"])
 @pytest.mark.parametrize("failure", ["audit", "integrity", "recovery"])
 def test_atomic_rollback_no_sensitive_errors(client, customer, factory, monkeypatch, caplog, operation, failure):
     user_id = customer["idUsuario"]
@@ -394,22 +361,19 @@ def test_atomic_rollback_no_sensitive_errors(client, customer, factory, monkeypa
         monkeypatch.setattr(service, "record", fail_record)
     path = BASE + "/" + user_id
     body = {"nombres": "No persistir"} if operation == "edit" else {"correo": "nuevo@example.com"}
-    response = client.patch(path + "/estado-cuenta", json={"activo": False}) if operation == "state" else client.patch(path, json=body)
+    response = client.patch(path, json=body)
     assert response.status_code == (409 if failure == "integrity" else 500)
     assert "private-marker" not in response.text + caplog.text
     assert client.get(path).json() == customer and audit(factory) == before
-    assert credential_states(factory, user_id) == ([None, None], [None, None])
+    assert credential_states(factory, user_id) == [None, None]
 
 
-@pytest.mark.parametrize("change,status", [("activo", 401), ("role", 403), ("permission", 403)])
+@pytest.mark.parametrize("change,status", [("role", 403), ("permission", 403)])
 def test_actor_revalidated_after_locks(client, customer, factory, operator, monkeypatch, change, status):
     original = service.public_role
     def after_wait(db, settings):
         result = original(db, settings)
-        if change == "activo":
-            db.execute(update(Usuario).where(Usuario.idusuario == operator).values(activo=False)
-                       .execution_options(synchronize_session=False))
-        elif change == "role":
+        if change == "role":
             db.execute(update(Usuario).where(Usuario.idusuario == operator).values(nrorol="cliente")
                        .execution_options(synchronize_session=False))
         else:
@@ -420,10 +384,9 @@ def test_actor_revalidated_after_locks(client, customer, factory, operator, monk
     before = audit(factory)
     path = BASE + "/" + customer["idUsuario"]
     assert client.patch(path, json={"nombres": "No"}).status_code == status
-    assert client.patch(path + "/estado-cuenta", json={"activo": False}).status_code == status
     assert audit(factory) == before
     with factory() as db:
-        assert db.get(Usuario, customer["idUsuario"]).activo
+        assert db.get(Usuario, customer["idUsuario"]).nombre == customer["nombres"]
 
 
 def test_lock_contract_refresh_and_no_continuity_lock(factory, customer, client, monkeypatch):
@@ -468,10 +431,10 @@ def test_contract_no_creation_delete_commercial_filter_or_proportions(app, clien
     paths = schema["paths"]
     assert set(paths[BASE]) == {"get"}
     assert set(paths[BASE + "/{idUsuario}"]) == {"get", "patch"}
-    assert set(paths[BASE + "/{idUsuario}/estado-cuenta"]) == {"patch"}
+    assert BASE + "/{idUsuario}/estado-cuenta" not in paths
     params = {p["name"] for p in paths[BASE]["get"]["parameters"]}
-    assert params == {"offset", "limit", "q", "activo"}
-    for name in ("ClienteDetalle", "ClientePerfil", "ClienteEditar", "ClienteEstadoCuenta"):
+    assert params == {"offset", "limit", "q"}
+    for name in ("ClienteDetalle", "ClientePerfil", "ClienteEditar"):
         assert "proporciones" not in schema["components"]["schemas"][name]["properties"]
     assert client.post(BASE, json={}).status_code == 405
     assert client.delete(BASE + "/" + customer["idUsuario"]).status_code == 405

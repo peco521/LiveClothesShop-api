@@ -20,8 +20,8 @@ def predicates(filters, dialect):
 def list_events(db, filters):
     conditions = predicates(filters, db.get_bind().dialect.name)
     total = db.scalar(select(func.count()).select_from(Bitacora).where(*conditions))
-    # Do not even load private details/IP for the summary projection.
-    rows = db.execute(select(Bitacora.id, Bitacora.usuario_id, Bitacora.accion, Bitacora.fecha)
+    # Include the displayed IP, but keep private details out of the list projection.
+    rows = db.execute(select(Bitacora.id, Bitacora.usuario_id, Bitacora.accion, Bitacora.fecha, Bitacora.ip)
                       .where(*conditions).order_by(Bitacora.fecha.desc(), Bitacora.id.desc())
                       .offset(filters.offset).limit(filters.limit)).all()
     return rows, total

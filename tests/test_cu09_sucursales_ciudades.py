@@ -1,6 +1,5 @@
 """CU09: injected SQLite only; PostgreSQL contracts compiled without connections."""
 from datetime import timedelta
-from pathlib import Path
 import re
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -12,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.schema import CreateTable
 
 from app.core.security import utcnow
-from app.modules.seguridad_accesos.models import Bitacora, Funcion, Rol, RolFuncion, Sesion, Usuario
+from app.modules.seguridad_accesos.models import Bitacora, Funcion, Rol, RolFuncion, Usuario
 from app.modules.seguridad_accesos.shared.models import Ciudad, Sucursal
 from app.modules.seguridad_accesos.shared.repositories import organizacion as repository
 from app.modules.seguridad_accesos.cu05_usuarios_empleados.repositories import usuario as cu05
@@ -40,8 +39,10 @@ def operator(client, registered, credentials, factory):
 
 
 @pytest.fixture
-def branch(client, operator):
-    assert client.post(CITIES, json={"id": 0, "nombre": "Ciudad"}).status_code == 201
+def branch(client, operator, factory):
+    with factory.begin() as db:
+        db.add(Ciudad(id=0, nombre="Ciudad"))
+        service.record(db, "ciudad_creada", operator, None, True)
     response = client.post(BRANCHES, json={"nombre": "Central", "direccion": "Calle", "idCiud": 0})
     assert response.status_code == 201
     return response.json()
@@ -77,29 +78,28 @@ def test_03_no_bypass(client, operator, factory, permission):
         assert client.request(method, path).status_code == 403
 
 
-@pytest.mark.parametrize("state", ["inactive", "expired", "revoked", "permission"])
-def test_04_access_revocation(client, operator, factory, state):
-    with factory.begin() as db:
-        if state == "inactive":
-            db.get(Usuario, operator).activo = False
-        elif state == "permission":
+@pytest.mark.parametrize("state", ["password_changed", "expired", "revoked", "permission"])
+def test_04_access_revocation(client, operator, factory, state, settings, monkeypatch):
+    if state == "password_changed":
+        with factory.begin() as db:
+            db.get(Usuario, operator).contrasena = "changed-password-hash"
+    elif state == "permission":
+        with factory.begin() as db:
             db.delete(db.get(RolFuncion, ("organizacion", "CU09")))
-        else:
-            session = db.scalar(select(Sesion).where(Sesion.usuario_id == operator))
-            if state == "expired":
-                session.creada_en = utcnow() - timedelta(days=2)
-                session.expira_en = utcnow() - timedelta(days=1)
-            else:
-                session.revocada_en = utcnow()
+    elif state == "expired":
+        monkeypatch.setattr("app.core.access_tokens.utcnow", lambda: utcnow() + timedelta(hours=9))
+    else:
+        client.app.state.access_tokens.revoke(client.cookies.get(settings.cookie_name))
     for method, path in ROUTES:
         assert client.request(method, path).status_code == (403 if state == "permission" else 401)
 
 
 @pytest.mark.parametrize("id", [-32768, -1, 0, 32767])
-def test_05_city_manual_full_range(client, operator, id):
-    payload = {"id": id, "nombre": "  Ciudad  "}
-    response = client.post(CITIES, json=payload)
-    assert response.status_code == 201 and response.json() == {"id": id, "nombre": "Ciudad"}
+def test_05_city_manual_full_range(client, operator, id, factory):
+    with factory.begin() as db:
+        db.add(Ciudad(id=id, nombre="Ciudad"))
+    response = client.get(f"{CITIES}/{id}")
+    assert response.status_code == 200 and response.json() == {"id": id, "nombre": "Ciudad"}
     assert client.get(f"{CITIES}/{id}").json() == response.json()
     assert client.patch(f"{CITIES}/{id}", json={"nombre": "Nueva"}).json()["id"] == id
 
@@ -111,16 +111,16 @@ def test_06_strict_city_json_id(client, operator, id):
 
 def test_07_duplicate_names_not_ids(client, operator, factory):
     for id in (0, 1):
-        assert client.post(CITIES, json={"id": id, "nombre": "Igual"}).status_code == 201
+        assert client.post(CITIES, json={"nombre": "Igual"}).status_code == 201
     before = audit(factory)
     response = client.post(CITIES, json={"id": 0, "nombre": "Otra"})
-    assert response.status_code == 409 and response.json()["error"]["code"] == "ciudad_duplicada"
+    assert response.status_code == 422
     assert audit(factory) == before
 
 
-@pytest.mark.parametrize("payload", [{"nombre": "Ciudad"}, {"id": 1, "nombre": ""}, {"id": 1, "nombre": " "},
-    {"id": 1, "nombre": "x" * 51}, {"id": 1, "nombre": None}, {"id": 1, "nombre": 1},
-    {"id": 1, "nombre": "Ciudad", "estado": "activo"}])
+@pytest.mark.parametrize("payload", [{}, {"nombre": ""}, {"nombre": " "},
+    {"nombre": "x" * 51}, {"nombre": None}, {"nombre": 1},
+    {"nombre": "Ciudad", "estado": "activo"}])
 def test_08_city_validation(client, operator, payload):
     assert client.post(CITIES, json=payload).status_code == 422
 
@@ -158,14 +158,16 @@ def test_12_reference_validation_and_patch_empty(client, branch, factory):
     assert audit(factory) == before
 
 
-def test_13_max_lengths_and_negative_city_reassignment(client, branch):
-    assert client.post(CITIES, json={"id": -32768, "nombre": "x" * 50}).status_code == 201
+def test_13_max_lengths_and_negative_city_reassignment(client, branch, factory):
+    with factory.begin() as db:
+        db.add(Ciudad(id=-32768, nombre="x" * 50))
     path = f"{BRANCHES}/{branch['nro']}"
     response = client.patch(path, json={"nombre": "x" * 50, "direccion": "x" * 100, "idCiud": -32768})
     assert response.status_code == 200 and response.json()["idCiud"] == -32768
     assert response.json()["ciudad"]["nombre"] == "x" * 50
     assert client.get(path).json() == response.json()
-    assert client.post(CITIES, json={"id": 32767, "nombre": "Extremo"}).status_code == 201
+    with factory.begin() as db:
+        db.add(Ciudad(id=32767, nombre="Extremo"))
     assert client.post(BRANCHES, json={"nombre": "N", "direccion": "D", "estado": "inactivo", "idCiud": 32767}).status_code == 201
 
 
@@ -185,9 +187,10 @@ def test_15_existing_integer_ids_not_positive_only(client, branch, factory, nro)
     assert client.patch(f"{BRANCHES}/{nro}", json={"estado": "inactivo"}).status_code == 200
 
 
-def test_16_city_pagination_literal_search(client, operator):
+def test_16_city_pagination_literal_search(client, operator, factory):
     for id, name in [(2, "Igual"), (1, "Igual"), (0, "A%_/B"), (-1, "Otro")]:
-        assert client.post(CITIES, json={"id": id, "nombre": name}).status_code == 201
+        with factory.begin() as db:
+            db.add(Ciudad(id=id, nombre=name))
     result = client.get(CITIES, params={"q": " IGUAL ", "offset": 1, "limit": 1}).json()
     assert result == {"items": [{"id": 2, "nombre": "Igual"}], "total": 2, "offset": 1, "limit": 1}
     for q in ("%", "_", "/", "a%_/b"):
@@ -196,8 +199,9 @@ def test_16_city_pagination_literal_search(client, operator):
     assert client.get(CITIES, params={"offset": 999}).json()["items"] == []
 
 
-def test_17_branch_filters_order_total(client, branch):
-    client.post(CITIES, json={"id": -1, "nombre": "Antes"})
+def test_17_branch_filters_order_total(client, branch, factory):
+    with factory.begin() as db:
+        db.add(Ciudad(id=-1, nombre="Antes"))
     for city_id, state in [(0, "activo"), (0, "inactivo"), (-1, "activo")]:
         assert client.post(BRANCHES, json={"nombre": "Igual", "direccion": "A%_/B", "idCiud": city_id, "estado": state}).status_code == 201
     filters = {"q": " / ", "idCiud": 0, "estado": "activo", "limit": 1}
@@ -251,7 +255,7 @@ def test_21_atomic_rollback(client, branch, factory, monkeypatch, operation, cap
     monkeypatch.setattr(service, "record", fail)
     path = f"{BRANCHES}/{branch['nro']}"
     if operation == "city_create":
-        response = client.post(CITIES, json={"id": 1, "nombre": "Nueva"})
+        response = client.post(CITIES, json={"nombre": "Nueva"})
         assert client.get(CITIES + "/1").status_code == 404
     elif operation == "branch_create":
         response = client.post(BRANCHES, json={"nombre": "Nueva", "direccion": "Otra", "idCiud": 0})
@@ -273,12 +277,12 @@ def test_22_integrity_race_sanitized_rollback(client, operator, factory, monkeyp
         raise IntegrityError("private-sql", {}, Exception("private-params"))
     monkeypatch.setattr(repository, "add", conflict)
     before = audit(factory)
-    response = client.post(CITIES, json={"id": 0, "nombre": "Ciudad"})
+    response = client.post(CITIES, json={"nombre": "Ciudad"})
     assert response.status_code == 409 and "private" not in response.text
     assert client.get(CITIES).json()["total"] == 0 and audit(factory) == before
 
 
-@pytest.mark.parametrize("kind", ["inactive", "permission"])
+@pytest.mark.parametrize("kind", ["missing", "permission"])
 def test_23_revalidate_after_lock(client, branch, factory, monkeypatch, kind):
     original = repository.branch
     locked = []
@@ -288,10 +292,10 @@ def test_23_revalidate_after_lock(client, branch, factory, monkeypatch, kind):
     monkeypatch.setattr(repository, "branch", lock)
     def actor(*args):
         assert locked == [True]
-        return SimpleNamespace(activo=kind != "inactive", nrorol="revoked")
+        return None if kind == "missing" else SimpleNamespace(nrorol="revoked")
     monkeypatch.setattr(service.continuidad, "actor", actor)
     before = audit(factory)
-    assert client.patch(f"{BRANCHES}/{branch['nro']}", json={"nombre": "Otra"}).status_code == (401 if kind == "inactive" else 403)
+    assert client.patch(f"{BRANCHES}/{branch['nro']}", json={"nombre": "Otra"}).status_code == (401 if kind == "missing" else 403)
     assert audit(factory) == before
 
 
@@ -350,7 +354,8 @@ def test_27_exact_routes_no_delete(app, client, branch):
     paths = app.openapi()["paths"]
     assert {p: set(v) for p, v in paths.items() if p.startswith((CITIES, BRANCHES))} == {
         CITIES: {"get", "post"}, CITIES + "/{id}": {"get", "patch"},
-        BRANCHES: {"get", "post"}, BRANCHES + "/{nro}": {"get", "patch"}}
+        BRANCHES: {"get", "post"}, BRANCHES + "/{nro}": {"get", "patch"},
+        BRANCHES + "/horarios-sugeridos": {"get"}}
     for base in (CITIES, BRANCHES):
         for method in ("DELETE", "PUT"):
             assert client.request(method, base + "/0").status_code == 405
@@ -371,12 +376,8 @@ def test_28_read_no_dml(client, branch, factory):
 
 
 def test_29_dependents_unchanged(client, branch, factory, operator):
-    # Use actual official definitions only in this isolated SQLite fixture. SQLite
-    # accepts these type names; explicit fixture PKs avoid emulating SERIAL.
-    # Move table FKs after columns and adapt now() syntax for SQLite only.
-    sql = (Path(__file__).resolve().parents[2] / "database/schema.sql").read_text(encoding="utf-8")
-    names = ["talla", "promocion", "categoria", "marca", "coleccion", "proveedor", "producto", "varianteProd",
-             "horario_atencion", "horario_suc", "inventario", "carrito", "reserva", "venta"]
+    # The isolated fixture already creates all mapped business tables (CU10–CU14).
+    # This regression must not depend on an untracked external schema.sql file.
     with factory.begin() as db:
         actor = db.get(Usuario, operator)
         employee_data = {column.key: getattr(actor, column.key) for column in Usuario.__table__.columns}
@@ -385,17 +386,6 @@ def test_29_dependents_unchanged(client, branch, factory, operator):
         db.flush()
         db.add(Empleado(idusuario="employee-fixture", cod_emp="EMP", cargo="Prueba", nrosuc=branch["nro"]))
         db.flush()
-        for name in names:
-            ddl = re.search(r"create table " + name + r"\s*\(.*?\);", sql, re.I | re.S).group()
-            fk_pattern = r",\s*constraint\s+\w+\s+foreign key\s*\([^)]*\)\s+references\s+\w+\s*\([^)]*\)\s+on update cascade on delete cascade"
-            fks = re.findall(fk_pattern, ddl, re.I)
-            ddl = re.sub(fk_pattern, "", ddl, flags=re.I)
-            ddl = ddl[:-2] + "".join(fks) + ");"
-            ddl = re.sub(r"default now\(\)", "default CURRENT_TIMESTAMP", ddl, flags=re.I)
-            # CU10 registra talla/promocion/categoria/marca/coleccion/proveedor/
-            # producto/varianteProd/inventario en Base.metadata; no recrearlas.
-            ddl = re.sub(r"create table", "create table if not exists", ddl, count=1, flags=re.I)
-            db.execute(text(ddl))
         db.execute(text("INSERT INTO talla VALUES (1, 'M')"))
         db.execute(text("INSERT INTO categoria VALUES (1, 'Prueba')"))
         db.execute(text("INSERT INTO marca VALUES (1, 'Prueba', 'activo')"))
@@ -404,7 +394,7 @@ def test_29_dependents_unchanged(client, branch, factory, operator):
         db.execute(text("INSERT INTO producto VALUES ('p', 'Prueba', 'activo', NULL, 1, 1, 1, 1)"))
         db.execute(text("INSERT INTO varianteProd VALUES ('v', 'sku', 1, 'activo', NULL, 1, 'p')"))
         db.execute(text("INSERT INTO horario_atencion VALUES (1, '08:00', '18:00')"))
-        db.execute(text("INSERT INTO horario_suc VALUES (1, :nro)"), {"nro": branch["nro"]})
+        db.execute(text("INSERT INTO horario_suc (idaten,nrosuc) VALUES (1, :nro)"), {"nro": branch["nro"]})
         db.execute(text("INSERT INTO inventario VALUES (1, 10, 8, :nro, 'v')"), {"nro": branch["nro"]})
         db.execute(text("INSERT INTO reserva VALUES (1, '2026-09-12', '10:00', 'pendiente', :nro, :actor)"), {"nro": branch["nro"], "actor": operator})
         db.execute(text("INSERT INTO venta VALUES (1, NULL, '2026-09-12 10:00', 1, 0, 'registrada', :actor, NULL, :nro, NULL, 1)"), {"actor": operator, "nro": branch["nro"]})
@@ -422,8 +412,9 @@ def test_29_dependents_unchanged(client, branch, factory, operator):
         assert client.patch(CITIES + "/0", json={"nombre": "Renombrada"}).status_code == 200
         detail = client.get(f"{BRANCHES}/{branch['nro']}").json()
         assert detail["idCiud"] == 0 and detail["ciudad"]["nombre"] == "Renombrada"
-        assert client.post(CITIES, json={"id": -1, "nombre": "Destino"}).status_code == 201
-        assert client.patch(f"{BRANCHES}/{branch['nro']}", json={"estado": "inactivo", "idCiud": -1}).status_code == 200
+        nueva = client.post(CITIES, json={"nombre": "Destino"})
+        assert nueva.status_code == 201
+        assert client.patch(f"{BRANCHES}/{branch['nro']}", json={"estado": "inactivo", "idCiud": nueva.json()["id"]}).status_code == 200
     finally:
         event.remove(engine, "before_cursor_execute", capture)
     assert snapshot() == before
@@ -434,7 +425,7 @@ def test_29_dependents_unchanged(client, branch, factory, operator):
 def test_30_postgresql_mapping_and_parameterized_queries():
     city_ddl = str(CreateTable(Ciudad.__table__).compile(dialect=postgresql.dialect()))
     branch_ddl = str(CreateTable(Sucursal.__table__).compile(dialect=postgresql.dialect()))
-    assert "id SMALLINT NOT NULL" in city_ddl and "SERIAL" not in city_ddl and "UNIQUE" not in city_ddl
+    assert "id SMALLINT GENERATED BY DEFAULT AS IDENTITY" in city_ddl and "UNIQUE" not in city_ddl
     assert "nro SERIAL NOT NULL" in branch_ddl and "nombre VARCHAR(50) NOT NULL" in branch_ddl
     assert "direccion VARCHAR(100) NOT NULL" in branch_ddl and "DEFAULT 'activo'" in branch_ddl
     assert "ON DELETE RESTRICT ON UPDATE CASCADE" in branch_ddl and "UNIQUE" not in branch_ddl
@@ -460,7 +451,8 @@ def test_32_defaults_empty_and_noop_no_dml(client, operator, factory):
     for base in (CITIES, BRANCHES):
         assert client.get(base).json() == {"items": [], "total": 0, "offset": 0, "limit": 20}
         assert client.get(base, params={"limit": 100, "offset": 9223372036854775807}).status_code == 200
-    client.post(CITIES, json={"id": 0, "nombre": "Ciudad"})
+    with factory.begin() as db:
+        db.add(Ciudad(id=0, nombre="Ciudad"))
     statements = []
     def capture(conn, cursor, statement, *args):
         statements.append(statement)
@@ -476,3 +468,85 @@ def test_32_defaults_empty_and_noop_no_dml(client, operator, factory):
 def test_33_cu09_repository_reuses_shared_implementation():
     from app.modules.seguridad_accesos.cu09_sucursales_ciudades.repositories import organizacion
     assert organizacion is repository and service.repository is repository
+
+
+def test_34_create_edit_shared_hours(client, branch, operator, factory):
+    ranges = [{"horaIni": "08:00:00", "horaFin": "12:00:00", "dias": [1,2,3,4,5,6,7]}, {"horaIni": "14:00:00", "horaFin": "18:00:00", "dias": [1,2,3,4,5,6,7]}]
+    data = {"nombre": "Otra sucursal", "direccion": "Calle", "idCiud": 0, "horarios": ranges}
+    first = client.post(BRANCHES, json=data)
+    second = client.post(BRANCHES, json=data)
+    assert first.status_code == second.status_code == 201
+    assert first.json()["horarios"] == ranges
+    path = f"{BRANCHES}/{first.json()['nro']}"
+    changed = [{"horaIni": "09:00:00", "horaFin": "17:00:00", "dias": [1,2,3,4,5,6,7]}]
+    assert client.patch(path, json={"horarios": changed}).json()["horarios"] == changed
+    assert client.get(f"{BRANCHES}/{second.json()['nro']}").json()["horarios"] == ranges
+    assert client.get(BRANCHES).json()["items"]
+    before = audit(factory)
+    assert client.patch(path, json={"horarios": changed}).status_code == 200
+    assert audit(factory) == before
+    from datetime import time
+    from app.modules.cliente_experiencia_compra.cu11_gestionar_reserva.services.reserva import _validar_horario
+    from app.core.errors import DomainError
+    with factory() as db:
+        assert _validar_horario(db, first.json()["nro"], time(10))
+        with pytest.raises(DomainError):
+            _validar_horario(db, first.json()["nro"], time(18))
+    assert client.patch(path, json={"horarios": []}).json()["horarios"] == []
+    assert client.get(f"{BRANCHES}/{second.json()['nro']}").json()["horarios"] == ranges
+
+
+@pytest.mark.parametrize("ranges", [
+    [{"horaIni": "18:00", "horaFin": "08:00"}],
+    [{"horaIni": "08:00", "horaFin": "08:00"}],
+    [{"horaIni": "25:00", "horaFin": "26:00"}],
+    [{"horaIni": "08:00Z", "horaFin": "18:00Z"}],
+    [{"horaIni": "08:00", "horaFin": "12:00"}, {"horaIni": "11:00", "horaFin": "18:00"}],
+])
+def test_35_invalid_hours_no_changes(client, branch, ranges, factory):
+    before = audit(factory)
+    path = f"{BRANCHES}/{branch['nro']}"
+    assert client.patch(path, json={"horarios": ranges}).status_code == 422
+    assert client.post(BRANCHES, json={"nombre": "Nueva", "direccion": "Calle", "idCiud": 0, "horarios": ranges}).status_code == 422
+    assert client.get(path).json() == branch
+    assert audit(factory) == before
+
+
+def test_36_hours_rollback_with_audit(client, branch, factory, monkeypatch):
+    def fail(*args):
+        raise RuntimeError("private-marker")
+    monkeypatch.setattr(service, "record", fail)
+    path = f"{BRANCHES}/{branch['nro']}"
+    response = client.patch(path, json={"horarios": [{"horaIni": "08:00", "horaFin": "18:00"}]})
+    assert response.status_code == 500
+    assert "private-marker" not in response.text
+    assert client.get(path).json()["horarios"] == []
+    with factory() as db:
+        assert db.execute(text("SELECT * FROM horario_atencion")).all() == []
+        assert db.execute(text("SELECT * FROM horario_suc")).all() == []
+
+
+def test_37_days_are_branch_specific_and_suggestions_reuse_hours(client, branch, factory):
+    from datetime import date, time
+    from app.core.errors import DomainError
+    from app.modules.cliente_experiencia_compra.cu11_gestionar_reserva.services.reserva import _validar_horario
+    one = [{"horaIni": "08:00:00", "horaFin": "18:00:00", "dias": [1, 3, 5]}]
+    two = [{"horaIni": "08:00:00", "horaFin": "18:00:00", "dias": [2, 4]}]
+    path = f"{BRANCHES}/{branch['nro']}"
+    assert client.patch(path, json={"horarios": one}).json()["horarios"] == one
+    other = client.post(BRANCHES, json={"nombre": "Otra", "direccion": "Calle", "idCiud": 0, "horarios": two})
+    assert other.status_code == 201 and other.json()["horarios"] == two
+    suggestions = client.get(BRANCHES + "/horarios-sugeridos").json()
+    assert len(suggestions) == 1 and suggestions[0]["horaIni"] == "08:00:00"
+    assert client.get(path).json()["horarios"] == one
+    with factory() as db:
+        assert len(db.execute(text("SELECT * FROM horario_atencion")).all()) == 1
+        assert db.execute(text("SELECT dias FROM horario_suc WHERE nrosuc = :nro"), {"nro": branch["nro"]}).scalar() == "Lunes,Miercoles,Viernes"
+        assert _validar_horario(db, branch["nro"], time(10), date(2026, 9, 14))
+        with pytest.raises(DomainError):
+            _validar_horario(db, branch["nro"], time(10), date(2026, 9, 15))
+    different_days = [{"horaIni": "09:00", "horaFin": "12:00", "dias": [1]}, {"horaIni": "10:00", "horaFin": "13:00", "dias": [2]}]
+    assert client.patch(path, json={"horarios": different_days}).status_code == 200
+    different_days[1]["dias"] = [1]
+    assert client.patch(path, json={"horarios": different_days}).status_code == 422
+    assert client.patch(path, json={"horarios": [{"horaIni": "08:00", "horaFin": "18:00", "dias": []}]}).status_code == 422

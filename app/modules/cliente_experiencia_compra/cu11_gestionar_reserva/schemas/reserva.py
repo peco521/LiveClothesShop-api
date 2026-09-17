@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 IdVariante = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=15)]
-EstadoReserva = Literal["pendiente", "confirmada", "atendida", "cancelada"]
+EstadoReserva = Literal["pendiente", "confirmada", "atendida", "cancelada", "vencida"]
 
 
 class Input(BaseModel):
@@ -74,6 +74,7 @@ class SucursalesClienteListado(BaseModel):
 
 
 class HorarioRango(BaseModel):
+    dias: list[int] = Field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 7])
     horaIni: time
     horaFin: time
 

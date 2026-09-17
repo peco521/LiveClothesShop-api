@@ -42,7 +42,7 @@ class Temporada(Base):
 
 
 class TempColeccion(Base):
-    __tablename__ = "tempColeccion"
+    __tablename__ = "tempcoleccion"
 
     idtemp: Mapped[int] = mapped_column(ForeignKey("temporada.idtemp", onupdate="CASCADE", ondelete="CASCADE"),
                                         primary_key=True)
@@ -100,7 +100,7 @@ class Talla(Base):
 
 
 class VarianteProd(Base):
-    __tablename__ = "varianteProd"
+    __tablename__ = "varianteprod"
     __table_args__ = (
         CheckConstraint("precio > 0"),
         CheckConstraint("estado IN ('activo', 'inactivo')"),
@@ -124,9 +124,9 @@ class Color(Base):
 
 
 class VarianteColor(Base):
-    __tablename__ = "varianteColors"
+    __tablename__ = "variantecolors"
 
-    idvar: Mapped[str] = mapped_column(ForeignKey("varianteProd.idvariante", onupdate="CASCADE", ondelete="CASCADE"),
+    idvar: Mapped[str] = mapped_column(ForeignKey("varianteprod.idvariante", onupdate="CASCADE", ondelete="CASCADE"),
                                        primary_key=True)
     idcolor: Mapped[int] = mapped_column(ForeignKey("color.idcolor", onupdate="CASCADE", ondelete="CASCADE"),
                                          primary_key=True)
@@ -139,4 +139,4 @@ class Inventario(Base):
     stock: Mapped[int] = mapped_column(Integer)
     cantdisp: Mapped[int] = mapped_column(Integer)
     nrosuc: Mapped[int] = mapped_column(ForeignKey("sucursal.nro", onupdate="CASCADE", ondelete="CASCADE"))
-    idvar: Mapped[str] = mapped_column(ForeignKey("varianteProd.idvariante", onupdate="CASCADE", ondelete="CASCADE"))
+    idvar: Mapped[str] = mapped_column(ForeignKey("varianteprod.idvariante", onupdate="CASCADE", ondelete="CASCADE"))

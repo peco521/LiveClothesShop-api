@@ -1,4 +1,4 @@
-from sqlalchemy import CheckConstraint, ForeignKey, Integer, SmallInteger, String
+from sqlalchemy import CheckConstraint, ForeignKey, Identity, Integer, SmallInteger, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -7,7 +7,7 @@ from app.core.database import Base
 class Ciudad(Base):
     __tablename__ = "ciudad"
 
-    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, autoincrement=False)
+    id: Mapped[int] = mapped_column(SmallInteger().with_variant(Integer, "sqlite"), Identity(), primary_key=True)
     nombre: Mapped[str] = mapped_column(String(50))
 
 

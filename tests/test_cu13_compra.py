@@ -289,7 +289,7 @@ def test_cantidad_obligatoria_en_modelo(factory, catalogo):
     with factory.begin() as db:
         db.add(Usuario(idusuario="u-ck", ci="1", apellidopat="P", apellidomat="M",
                        sexo="F", correo="ck@example.com", telefono="1", direccion="D",
-                       contrasena="x", activo=True, nombres="Ck",
+                       contrasena="x", nombre="Ck",
                        fechanac=_date(2000, 1, 1), tipo="C", nrorol="cliente"))
         db.flush()
         db.add(Cliente(idusuario="u-ck", cod_cl="CK1"))

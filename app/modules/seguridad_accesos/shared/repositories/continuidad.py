@@ -30,4 +30,4 @@ def has_permission(db, role_id, permission):
 def eligible_count(db, public_role_id):
     return db.scalar(select(func.count()).select_from(Usuario).join(Rol, Rol.nro == Usuario.nrorol)
                      .join(RolFuncion, RolFuncion.nrorol == Rol.nro).where(
-                         Usuario.activo.is_(True), Rol.nro != public_role_id, RolFuncion.idfun == "CU06"))
+                         Rol.nro != public_role_id, RolFuncion.idfun == "CU06"))

@@ -1,6 +1,6 @@
 """Consultas de reserva (CU11). El inventario se gestiona en shared comercio."""
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.modules.cliente_experiencia_compra.shared.models.catalogo import Producto, VarianteProd
 from app.modules.cliente_experiencia_compra.shared.models.comercio import DetalleReserva, Reserva
@@ -48,6 +48,12 @@ def vencidas(db, user_id: str, hoy):
                            .order_by(Reserva.nroreserva)).all())
 
 
+def reservas_en_estado(db, user_id: str, estado: str):
+    return list(db.scalars(select(Reserva).where(
+        Reserva.idusuariocl == user_id, Reserva.estado == estado
+    ).order_by(Reserva.nroreserva)).all())
+
+
 def add_reserva(db, row: Reserva):
     db.add(row)
     db.flush()
@@ -58,3 +64,29 @@ def add_detalle(db, row: DetalleReserva):
     db.add(row)
     db.flush()
     return row
+
+
+def crear_con_procedimiento(db, *, user_id: str, nro_suc: int, fecha, hora,
+                            id_vars: list[str], cantidades: list[int]) -> int:
+    result = db.execute(text("""
+        CALL sp_realizar_reserva(
+          :user_id, :nro_suc, :fecha, :hora,
+          CAST(:id_vars AS varchar[]), CAST(:cantidades AS integer[]), NULL
+        )
+    """), {
+        "user_id": user_id, "nro_suc": nro_suc, "fecha": fecha, "hora": hora,
+        "id_vars": id_vars, "cantidades": cantidades,
+    })
+    return int(result.scalar_one())
+
+
+def cancelar_con_procedimiento(db, nro_reserva: int):
+    db.execute(text("CALL sp_cancelar_reserva(:nro_reserva)"), {
+        "nro_reserva": nro_reserva,
+    })
+
+
+def vencer_con_procedimiento(db, horas_margen: int = 3):
+    db.execute(text("CALL sp_marcar_reservas_vencidas(:horas_margen)"), {
+        "horas_margen": horas_margen,
+    })

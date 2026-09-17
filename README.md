@@ -1,12 +1,15 @@
-# LiveClothesShop API — CU01 y CU02
+# LiveClothesShop API
 
-Backend FastAPI con SQLAlchemy 2/Psycopg 3, Argon2id y sesiones opacas.
-Fuente única del esquema: `../database/schema.sql`, relativa a este repositorio.
+Backend FastAPI con SQLAlchemy 2/Psycopg 3, Argon2id y accesos opacos en memoria.
+El usuario se mapea a `usuario.nombre`, sin `usuario.activo` ni tabla `sesion`.
+No se necesita el archivo externo `../database/schema.sql` para arrancar la API.
 La aplicación **no crea tablas, no ejecuta migraciones ni provisiona usuarios al iniciar**.
+Las decisiones y limitaciones del rediseño se explican en
+[Autenticación sin tabla de sesiones](docs/autenticacion-sin-tabla.md).
 
 ## Instalación local (PowerShell, Python 3.12)
 
-Ejecutar desde `C:\SI2_Parcial1\LiveClothesShop-api`:
+Ejecutar desde la raíz de este repositorio:
 
 ```powershell
 python -m venv .venv
@@ -18,7 +21,8 @@ El manifiesto conserva las dependencias preexistentes y añade Argon2id.
 
 ## Variables de entorno
 
-La aplicación lee el entorno del proceso. No carga `.env` automáticamente.
+La aplicación carga el archivo `.env` de este repositorio. Las variables del
+entorno del proceso tienen prioridad; `.env` no debe versionarse ni compartirse.
 
 | Variable | Obligatoria / valor predeterminado | Uso |
 |---|---|---|
@@ -43,9 +47,12 @@ $env:COOKIE_SECURE = 'false'
 $env:ALLOWED_ORIGINS = '["http://localhost:4200","http://localhost:4300","http://127.0.0.1:8000"]'
 ```
 
-El esquema debe estar aplicado previamente a esa base mediante una operación
-autorizada. `schema.sql` es un esquema de creación, no una migración sobre una
-base existente. Este trabajo no ha aplicado SQL a PostgreSQL.
+Las tablas de negocio deben existir previamente en esa base. No ejecutar un
+script de creación sobre una base existente sin revisar sus efectos. El rediseño
+de autenticación no requiere agregar `activo`, `nombres` ni `sesion` a PostgreSQL.
+Para una base existente deben ejecutarse, en el orden documentado, los scripts
+de `database/sql/`; esta versión requiere especialmente
+`04_preparar_procedimientos_backend.sql`.
 
 Solo después de verificar el destino, la provisión explícita siguiente escribe
 el rol Cliente sin funciones ni cuentas administrativas. No fue ejecutada durante
@@ -57,7 +64,7 @@ la implementación:
 
 Si el rol tiene funciones o está asignado a cuentas de tipo distinto de `C`,
 la provisión y el registro fallan de forma segura. Es una restricción deliberada
-de CU01/CU02; no hay permisos de negocio del Cliente implementados todavía.
+de CU01/CU02; las rutas de compra validan además el perfil de Cliente.
 
 Para crear el primer SuperAdmin en una base local ya preparada, configurar las
 variables de entorno anteriores y ejecutar:
@@ -75,12 +82,14 @@ verifica el registro y no cambia su contraseña.
 Arranque:
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-headers
 ```
 
 `--no-proxy-headers` conserva la IP del par conectado para bitácora. En un despliegue
 con proxy se deberá configurar explícitamente qué proxies son confiables.
 Nunca habilitar logging de cuerpos, cookies, Authorization o parámetros SQL.
+Usar una sola instancia/worker: los accesos viven en memoria. Un reinicio,
+incluido un reinicio por `--reload`, exige iniciar sesión de nuevo.
 
 ## Contratos
 
@@ -99,7 +108,7 @@ no configura automáticamente el marcador.
 
 ### POST /api/auth/registro — 201
 
-Campos: `ci`, `nombres`, `apellidoPat`, `apellidoMat`, `sexo` (`M`/`F`), `correo`,
+Campos: `ci`, `nombre` (también se acepta `nombres`), `apellidoPat`, `apellidoMat`, `sexo` (`M`/`F`), `correo`,
 `telefono`, `direccion`, `fechaNac` (ISO), `contrasena` (12–128 caracteres, no vacía).
 Nombre/apellidos, teléfono y dirección no pueden quedar en blanco. No se cambia
 ni trunca la contraseña. Los campos adicionales, incluidos rol, tipo y permisos,
@@ -125,17 +134,24 @@ Respuesta:
 ```
 
 La credencial aleatoria se entrega únicamente mediante `Set-Cookie` HttpOnly;
-nunca en JSON. El digest SHA-256 solo se persiste en `sesion`.
+nunca en JSON. Su digest SHA-256 se conserva únicamente en memoria del servidor.
 La contraseña se verifica exclusivamente contra Argon2id. Una cuenta inexistente,
-inactiva o con credenciales incorrectas recibe el mismo 401.
+con contraseña en texto plano o con credenciales incorrectas recibe el mismo 401.
+El JSON mantiene el alias `nombres` para el frontend existente; no es una columna SQL.
 
 ### GET /api/auth/me — 200
 
 Misma respuesta pública que login. Verifica cookie, vencimiento, revocación,
-usuario activo y rol/permisos actuales. Permite validar la infraestructura de CU02.
+existencia del usuario, huella de su contraseña y rol/permisos actuales.
 También puede verificar una sesión existente por `Authorization: Bearer ...`;
 se rechaza presentar cookie y Authorization simultáneamente. No se implementa
 emisión de credenciales móviles ni Flutter en esta etapa.
+
+### POST /api/auth/logout — 204
+
+Invalida el acceso actual en memoria y elimina su cookie. Otros dispositivos
+continúan autenticados hasta salir, expirar o cambiar la contraseña. Si falla
+la auditoría, la operación no se confirma y devuelve un error controlado.
 
 ### Errores
 
@@ -159,19 +175,40 @@ emisión de credenciales móviles ni Flutter en esta etapa.
 
 Las pruebas inyectan SQLite en memoria, activan FK y verifican transacciones reales,
 contratos HTTP y Argon2id. La URL PostgreSQL del fixture nunca se conecta. También
-se compila el mapping con el dialecto PostgreSQL y se verifica la integridad del
-esquema movido. SQLite no sustituye la validación futura en PostgreSQL de tipos,
+se compila el mapping con el dialecto PostgreSQL y se comprueba que no dependa
+de las columnas o tabla retiradas. SQLite no sustituye la validación en PostgreSQL de tipos,
 bloqueos y concurrencia. No se ejecutan pruebas contra URLs tomadas del entorno.
 
 ## Alcance y pendientes
 
-- Implementados: CU01, CU02 y escritura de eventos mínima; sin consulta de bitácora.
-- Preparada únicamente en SQL: recuperación de contraseña.
-- No implementados: CU03–CU09, Angular, Flutter, JWT ni refresh tokens.
+- El frontend separa `/login` (clientes) y `/admin/login` (administradores y
+  empleados). Los endpoints `/api/auth/login/cliente` y `/api/auth/login/admin`
+  validan el tipo de cuenta; `/api/auth/login` se conserva para consumidores
+  anteriores. La identidad devuelve `usuario.tipo`; las operaciones internas
+  siguen exigiendo sus permisos CU05–CU09.
+- La configuración local usa `CLIENTE_ROL_ID=C`, correspondiente al rol real de
+  Supabase. El script 05 documenta la reparación aplicada al perfil ADM-002 y
+  los permisos administrativos del rol A; no modifica contraseñas.
+- Las cuentas nuevas guardan las contraseñas con Argon2id. Las cuentas antiguas
+  importadas en texto plano (administrador, cliente o empleado) se convierten
+  automáticamente al ingresar con su contraseña correcta. En PostgreSQL se usa
+  `sp_cambiar_contrasena`; la conversión y la bitácora se confirman juntas antes
+  de entregar la cookie. Los formatos de hash reconocidos pero no compatibles
+  requieren recuperación de contraseña. El login no asigna permisos ni roles.
+- El repositorio incluye autenticación, administración y compra hasta CU15.
+- CU13/CU14 incluyen cancelación y Stripe Checkout en modo de prueba (USD).
+  Consulte [configuración y límites Stripe](docs/CU13_CU14_STRIPE.md).
+- La recuperación incluye un adaptador Gmail API configurable en `.env`;
+  consulte [CU04: configuración Gmail](docs/CU04_GMAIL.md) para obtener credenciales OAuth.
+  la tabla `recuperacion_contrasena` forma parte del SQL corregido y del script 04.
+- La autenticación de usuarios no utiliza JWT ni refresh tokens.
+  Gmail utiliza un refresh token OAuth separado, exclusivo de la cuenta remitente.
 - No existe todavía limitación distribuida de intentos. Debe configurarse en la
   infraestructura o implementarse antes de exposición pública del login.
-- No hay índice único de correo normalizado aprobado: API normaliza escrituras,
-  comprueba registros anteriores y atiende la restricción UNIQUE. Escrituras
-  externas al backend deben respetar la misma política.
-- Las sesiones anteriores permanecen válidas hasta expirar o estar marcadas como
-  revocadas. No existe endpoint de logout en esta fase.
+- El script 04 crea un índice único sobre `lower(btrim(correo))`; si encuentra
+  duplicados normalizados se detiene para que sean corregidos explícitamente.
+- No existe activación/desactivación de cuentas. Las rutas antiguas `/estado`
+  de usuarios y `/estado-cuenta` de clientes fueron retiradas. El frontend
+  administrativo debe retirar esos controles; no se modificó en este cambio.
+- Las pruebas usan los modelos del repositorio para crear sus bases aisladas;
+  no necesitan un archivo `database/schema.sql` externo.
