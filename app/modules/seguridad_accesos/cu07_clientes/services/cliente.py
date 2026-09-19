@@ -1,4 +1,6 @@
 from contextlib import contextmanager
+from uuid import uuid4
+import secrets
 
 from sqlalchemy.exc import IntegrityError
 
@@ -96,6 +98,45 @@ def revalidate_actor(db, actor_id):
         raise DomainError(401, "autenticacion_rechazada", "No se pudo autenticar la solicitud")
     if not continuidad.has_permission(db, actor.nrorol, "CU07"):
         raise DomainError(403, "acceso_denegado", "No tiene autorización para esta operación")
+
+
+def create(db, data, settings, passwords, actor_id, peer):
+    """CU07 alta administrativa: crea el cliente SIN cambiar la sesión del actor.
+
+    Reutiliza la creación de CU01 (procedimiento almacenado en PostgreSQL) pero
+    no emite cookie de sesión: la sesión del administrador permanece intacta.
+    """
+    email = str(data.correo)
+    encoded = passwords.hash(data.contrasena.get_secret_value())
+    user_id = str(uuid4())
+    with transaction(db):
+        role = public_role(db, settings)
+        if any(match.idusuario != user_id for match in usuario.by_email(db, email)):
+            raise DomainError(409, "correo_duplicado", "El correo ya está registrado")
+        revalidate_actor(db, actor_id)
+        usuario.create_client(db, user_id=user_id, data=data, password_hash=encoded,
+                              role_id=role.nro, client_code=secrets.token_hex(5))
+        record(db, "cliente_registrado", actor_id, peer, True)
+        result = detail(db, get(db, user_id), role)
+    return result
+
+
+def set_state(db, user_id, data, settings, actor_id, peer):
+    """CU07 baja lógica: desactiva o reactiva conservando ventas y reservas."""
+    with transaction(db):
+        user = get(db, user_id, lock=True)
+        role = public_role(db, settings)
+        detail(db, user, role)
+        revalidate_actor(db, actor_id)
+        client = profile(db, user)
+        estado = "frecuente" if data.activo else "inactivo"
+        if client.estado != estado:
+            client.estado = estado
+            db.flush()
+            record(db, "cliente_activado" if data.activo else "cliente_desactivado",
+                   actor_id, peer, True)
+        result = detail(db, user, role)
+    return result
 
 
 def edit(db, user_id, data, settings, actor_id, peer):

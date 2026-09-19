@@ -60,12 +60,6 @@ class RestablecerContrasena(PublicInput):
     _password = field_validator("nueva_contrasena")(Registro.password_not_blank.__func__)
 
 
-class RegistroResponse(BaseModel):
-    idUsuario: str
-    correo: str
-    mensaje: str = "Cliente registrado correctamente"
-
-
 class UsuarioResponse(BaseModel):
     idUsuario: str
     tipo: Literal["A", "C", "E"]
@@ -83,3 +77,12 @@ class AuthResponse(BaseModel):
     rol: RolResponse
     permisos: list[str]
     expiraEn: datetime
+
+
+class RegistroResponse(BaseModel):
+    idUsuario: str
+    correo: str
+    mensaje: str = "Cliente registrado correctamente"
+    # CU01: el registro público deja la sesión iniciada con el mismo contrato
+    # que /api/auth/login, para que el cliente entre directo a la tienda.
+    sesion: AuthResponse

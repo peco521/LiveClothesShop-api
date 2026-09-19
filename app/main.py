@@ -26,6 +26,7 @@ from app.modules.cliente_experiencia_compra.cu14_pago_electronico.routers.pago i
 from app.modules.cliente_experiencia_compra.cu15_historial_compra.routers.historial import router as cu15_router
 from app.modules.cliente_experiencia_compra.cu15_historial_compra.routers.administracion import router as cu15_admin_router
 from app.integrations.payments.mock import PasarelaMock
+from app.integrations.geocoding import configured_geocoder
 from app.modules.inventario_productos.cu18_gestionar_catalogo.routers.catalogo import router as cu18_router
 from app.modules.inventario_productos.cu19_gestionar_proveedores.routers.proveedor import router as cu19_router
 from app.modules.inventario_productos.cu20_gestionar_inventario.routers.inventario import router as cu20_router
@@ -41,7 +42,7 @@ from app.modules.inventario_productos.cu25_reportes.routers.reportes import rout
 
 
 def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryDelivery | None = None,
-               pasarela: PasarelaPagos | None = None):
+               pasarela: PasarelaPagos | None = None, geocoder=None):
     @asynccontextmanager
     async def lifespan(application):
         try:
@@ -54,6 +55,8 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
         application.state.access_tokens = AccessTokens()
         # Pasarela de pago mock por defecto; inyectable en tests. Sin pasarelas reales.
         application.state.pasarela = pasarela if pasarela is not None else PasarelaMock()
+        # CU09: verificador de direcciones; None cuando la geocodificación está desactivada.
+        application.state.geocoder = geocoder if geocoder is not None else configured_geocoder(config)
         application.state.stripe = None
         if config.payments_provider == "stripe":
             try:
@@ -138,7 +141,7 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
                 "GET, POST, PATCH, PUT, OPTIONS" if is_cu06 else
                 "GET, POST, PATCH, DELETE, OPTIONS" if is_cliente else
                 "GET, POST, PATCH, OPTIONS" if is_cu05 or is_cu09 else
-                "GET, PATCH, OPTIONS" if is_cu07 else "GET, POST, OPTIONS")
+                "GET, POST, PATCH, OPTIONS" if is_cu07 else "GET, POST, OPTIONS")
             response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-CSRF-Protection, Authorization"
         else:
             try:

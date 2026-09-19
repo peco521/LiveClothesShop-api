@@ -12,6 +12,9 @@ def locked_reserva(db, nroReserva: int):
     return db.scalar(query)
 
 
+MARGEN_HORAS = 3
+
+
 def detalles(db, nroReserva: int):
     return list(db.scalars(select(DetalleReserva)
                            .where(DetalleReserva.nroreserva == nroReserva)
@@ -86,7 +89,7 @@ def cancelar_con_procedimiento(db, nro_reserva: int):
     })
 
 
-def vencer_con_procedimiento(db, horas_margen: int = 3):
+def vencer_con_procedimiento(db, horas_margen: int = MARGEN_HORAS):
     db.execute(text("CALL sp_marcar_reservas_vencidas(:horas_margen)"), {
         "horas_margen": horas_margen,
     })

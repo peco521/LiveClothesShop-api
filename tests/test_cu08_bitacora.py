@@ -23,12 +23,14 @@ ACTIONS = [
     "cliente_registrado", "login_correcto", "login_rechazado", "logout_correcto",
     "recuperacion_solicitada", "contrasena_restablecida", "usuario_creado", "empleado_creado",
     "usuario_actualizado", "empleado_actualizado", "usuario_activado", "usuario_desactivado",
-    "rol_creado", "rol_actualizado", "permisos_rol_actualizados", "cliente_actualizado",
-    "cliente_activado", "cliente_desactivado",
+    "rol_creado", "rol_actualizado", "permisos_rol_actualizados", "rol_activado", "rol_desactivado",
+    "cliente_actualizado", "cliente_activado", "cliente_desactivado",
     "ciudad_creada", "ciudad_actualizada", "sucursal_creada", "sucursal_actualizada", "sucursal_estado_actualizado",
     "reserva_creada", "reserva_cancelada", "reserva_vencida",
     "carrito_item_agregado", "carrito_item_actualizado", "carrito_item_eliminado",
     "venta_registrada", "pago_iniciado", "pago_aprobado", "pago_rechazado", "venta_anulada",
+    "catalogo_guardado", "catalogo_eliminado", "proveedor_guardado", "proveedor_eliminado",
+    "inventario_movimiento_registrado",
 ]
 
 

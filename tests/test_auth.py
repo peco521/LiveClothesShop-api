@@ -16,12 +16,21 @@ def count(db, model):
     return db.scalar(select(func.count()).select_from(model))
 
 
-def test_registration(client, factory, registration, app):
+def test_registration(client, factory, registration, app, settings):
     registration["correo"] = "  ANA@EXAMPLE.COM "
     response = client.post("/api/auth/registro", json=registration)
     assert response.status_code == 201
     assert response.json()["correo"] == "ana@example.com"
-    assert "set-cookie" not in response.headers
+    # CU01: el registro público deja la sesión iniciada, con el mismo contrato
+    # que /api/auth/login (cookie HttpOnly + permisos vigentes del rol público).
+    session = response.json()["sesion"]
+    assert session["usuario"]["idUsuario"] == response.json()["idUsuario"]
+    assert session["rol"]["nro"] == "cliente" and session["permisos"] == []
+    cookie = client.cookies.get(settings.cookie_name)
+    assert cookie is not None and len(cookie) == 43
+    assert "HttpOnly" in response.headers["set-cookie"]
+    assert "Path=/api" in response.headers["set-cookie"]
+    assert client.get("/api/auth/me").json()["usuario"]["idUsuario"] == response.json()["idUsuario"]
     with factory() as db:
         user = db.get(Usuario, response.json()["idUsuario"])
         assert (user.tipo, user.nrorol) == ("C", "cliente")
@@ -31,7 +40,7 @@ def test_registration(client, factory, registration, app):
         profile = db.get(Cliente, user.idusuario)
         assert len(profile.cod_cl) == 10
         assert profile.estado == "frecuente"
-        assert not client.app.state.access_tokens._entries
+        assert len(client.app.state.access_tokens._entries) == 1
         assert count(db, Bitacora) == 1
 
 

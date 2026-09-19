@@ -6,6 +6,7 @@ from app.modules.cliente_experiencia_compra.shared.models.comercio import Horari
 from app.modules.cliente_experiencia_compra.shared.horarios import guardar_dias, leer_dias
 
 from app.core.errors import DomainError
+from app.integrations.geocoding import AddressNotFound
 from app.modules.seguridad_accesos.shared.models import Ciudad, Sucursal
 from app.modules.seguridad_accesos.shared.repositories import continuidad
 from app.modules.seguridad_accesos.cu09_sucursales_ciudades.repositories import organizacion as repository
@@ -56,11 +57,31 @@ def city_detail(row):
     return CiudadDetalle(id=row.id, nombre=row.nombre)
 
 
+def address_coordinates(direccion, city_row, geocoder):
+    """CU09: verifica que la dirección exista como ubicación real.
+
+    Devuelve (latitud, longitud) o (None, None) si la validación está
+    desactivada. Un fallo del proveedor no se confunde con una dirección
+    inexistente y nunca se guardan coordenadas parciales.
+    """
+    if geocoder is None:
+        return None, None
+    try:
+        return geocoder.locate(direccion, city_row.nombre)
+    except AddressNotFound:
+        raise DomainError(422, "direccion_no_verificada",
+                          "La dirección no corresponde a una ubicación conocida en esa ciudad") from None
+    except Exception:
+        raise DomainError(503, "geocodificacion_no_disponible",
+                          "No se pudo validar la dirección en este momento; intente nuevamente") from None
+
+
 def branch_detail(row, city_row, db):
     horarios = db.execute(select(HorarioAtencion, HorarioSuc.dias).join(HorarioSuc, HorarioSuc.idaten == HorarioAtencion.idaten)
                           .where(HorarioSuc.nrosuc == row.nro).order_by(HorarioAtencion.horaini, HorarioAtencion.horafin)).all()
     return SucursalDetalle(nro=row.nro, nombre=row.nombre, direccion=row.direccion,
                            estado=row.estado, idCiud=row.idciud, ciudad=city_detail(city_row),
+                           latitud=row.latitud, longitud=row.longitud,
                            horarios=[{"horaIni": h.horaini, "horaFin": h.horafin, "dias": leer_dias(dias)} for h, dias in horarios])
 
 
@@ -128,11 +149,13 @@ def edit_city(db, city_id, data, actor_id, peer):
     return result
 
 
-def create_branch(db, data, actor_id, peer):
+def create_branch(db, data, actor_id, peer, geocoder=None):
     with transaction(db):
         city_row = city(db, data.idCiud, lock=True, reference=True)
         revalidate_actor(db, actor_id)
-        row = Sucursal(nombre=data.nombre, direccion=data.direccion, estado=data.estado, idciud=data.idCiud)
+        latitud, longitud = address_coordinates(data.direccion, city_row, geocoder)
+        row = Sucursal(nombre=data.nombre, direccion=data.direccion, estado=data.estado,
+                       idciud=data.idCiud, latitud=latitud, longitud=longitud)
         repository.add(db, row)
         if data.horarios:
             replace_hours(db, row.nro, data.horarios)
@@ -142,7 +165,7 @@ def create_branch(db, data, actor_id, peer):
     return result
 
 
-def edit_branch(db, branch_id, data, actor_id, peer):
+def edit_branch(db, branch_id, data, actor_id, peer, geocoder=None):
     with transaction(db):
         row = branch(db, branch_id, lock=True)
         changes = data.model_dump(exclude_unset=True)
@@ -153,6 +176,9 @@ def edit_branch(db, branch_id, data, actor_id, peer):
         changes = {key: value for key, value in changes.items() if value != getattr(row, columns[key])}
         for key, value in changes.items():
             setattr(row, columns[key], value)
+        if {"direccion", "idCiud"} & changes.keys():
+            # Cambió la ubicación declarada: se vuelve a verificar contra el proveedor.
+            row.latitud, row.longitud = address_coordinates(row.direccion, city_row, geocoder)
         hours_changed = hours is not None and sorted(hours, key=lambda h: (h["horaIni"], h["horaFin"])) != [
             h.model_dump() for h in branch_detail(row, city_row, db).horarios]
         if hours_changed:

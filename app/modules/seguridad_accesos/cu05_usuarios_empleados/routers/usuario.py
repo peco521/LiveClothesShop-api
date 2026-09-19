@@ -7,7 +7,7 @@ from app.core.database import get_db
 from app.core.dependencies import require_permission
 from app.modules.seguridad_accesos.schemas.auth import RolResponse
 from app.modules.seguridad_accesos.cu05_usuarios_empleados.schemas.usuario import (
-    CiudadOpcion, EmpleadoCrear, EmpleadoEditar, SucursalOpcion, UsuarioDetalle, UsuariosListado,
+    CiudadOpcion, EmpleadoCrear, EmpleadoEditar, EstadoCuenta, SucursalOpcion, UsuarioDetalle, UsuariosListado,
 )
 from app.modules.seguridad_accesos.cu05_usuarios_empleados.services import usuario
 from app.modules.seguridad_accesos.cu05_usuarios_empleados.repositories.usuario import next_employee_code
@@ -59,6 +59,14 @@ def create_employee(data: EmpleadoCrear, request: Request, db: Session = Depends
                     identity=Depends(cu05_identity)):
     return usuario.create_employee(db, data, request.app.state.settings, request.app.state.passwords,
                                    identity.usuario.idUsuario, peer(request))
+
+
+@router.patch("/empleados/{idUsuario}/estado-cuenta", response_model=UsuarioDetalle)
+def set_employee_state(idUsuario: str, data: EstadoCuenta, request: Request, db: Session = Depends(get_db),
+                       identity=Depends(cu05_identity)):
+    # CU05: baja lógica (activo/inactivo). Nunca elimina al empleado ni su historial.
+    return usuario.set_state(db, idUsuario, data, request.app.state.settings,
+                             identity.usuario.idUsuario, peer(request))
 
 
 @router.patch("/empleados/{idUsuario}", response_model=UsuarioDetalle)

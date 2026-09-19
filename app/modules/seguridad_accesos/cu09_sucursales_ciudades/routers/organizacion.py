@@ -60,7 +60,9 @@ def suggested_hours(db: Session = Depends(get_db)):
 
 @router.post("/sucursales", response_model=SucursalDetalle, status_code=201)
 def create_branch(data: SucursalCrear, request: Request, db: Session = Depends(get_db), identity=Depends(cu09_identity)):
-    return service.create_branch(db, data, identity.usuario.idUsuario, peer(request))
+    # CU09: la dirección se verifica en el backend antes de guardar coordenadas.
+    return service.create_branch(db, data, identity.usuario.idUsuario, peer(request),
+                                 request.app.state.geocoder)
 
 
 @router.get("/sucursales/{nro}", response_model=SucursalDetalle)
@@ -70,4 +72,5 @@ def detail_branch(nro: BranchPath, db: Session = Depends(get_db)):
 
 @router.patch("/sucursales/{nro}", response_model=SucursalDetalle)
 def edit_branch(nro: BranchPath, data: SucursalEditar, request: Request, db: Session = Depends(get_db), identity=Depends(cu09_identity)):
-    return service.edit_branch(db, nro, data, identity.usuario.idUsuario, peer(request))
+    return service.edit_branch(db, nro, data, identity.usuario.idUsuario, peer(request),
+                               request.app.state.geocoder)

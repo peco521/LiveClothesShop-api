@@ -4,11 +4,13 @@ from typing import Literal
 from app.modules.seguridad_accesos.repositories import bitacora
 
 
-def record_role(db, action: Literal["rol_creado", "rol_actualizado", "permisos_rol_actualizados"],
+def record_role(db, action: Literal["rol_creado", "rol_actualizado", "permisos_rol_actualizados",
+                                    "rol_activado", "rol_desactivado"],
                 user_id: str, peer: str | None, role_id: str, *, agregadas: list[str] | None = None,
                 retiradas: list[str] | None = None):
     # Dedicated allowlist: never accept request metadata or free-form descriptions.
-    if action not in {"rol_creado", "rol_actualizado", "permisos_rol_actualizados"}:
+    if action not in {"rol_creado", "rol_actualizado", "permisos_rol_actualizados",
+                      "rol_activado", "rol_desactivado"}:
         raise ValueError("Acción de rol inválida")
     try:
         ip = str(ip_address(peer)) if peer else None

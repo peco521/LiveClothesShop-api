@@ -1,10 +1,14 @@
+import secrets
 from datetime import date
 from decimal import Decimal
+from uuid import uuid4
 from sqlalchemy import or_, select
 from app.core.errors import DomainError
 from app.modules.inventario_productos.shared.operaciones_access import branch
 from app.modules.inventario_productos.shared.access import transaction
 from app.modules.seguridad_accesos.models import Usuario, Cliente
+from app.modules.seguridad_accesos.repositories import rol as roles_repo
+from app.modules.seguridad_accesos.repositories import usuario as users_repo
 from app.modules.seguridad_accesos.services.bitacora import record
 from app.modules.cliente_experiencia_compra.shared.models.comercio import Venta, DetalleVenta, Pago, Reserva
 from app.modules.cliente_experiencia_compra.shared.repositories import comercio, catalogo
@@ -45,6 +49,27 @@ def customers(db, q, id_usuario=None):
     return [dict(idUsuario=u.idusuario, nombre=' '.join([u.nombre, u.apellidopat, u.apellidomat]), correo=u.correo, ci=u.ci) for u in users]
 
 
+def register_client(db, data, settings, passwords, actor, peer):
+    """CU24: alta de cliente desde caja, sin cambiar la sesión del cajero.
+
+    Reutiliza la creación interna de CU01/CU07 (procedimiento almacenado en
+    PostgreSQL) pero no emite cookie: la sesión de caja permanece intacta.
+    """
+    email = str(data.correo)
+    encoded = passwords.hash(data.contrasena.get_secret_value())
+    user_id = str(uuid4())
+    with transaction(db):
+        role = roles_repo.public_role(db, settings.cliente_rol_id)
+        if role is None:
+            raise DomainError(503, 'registro_no_disponible', 'El registro no está disponible')
+        if any(match.idusuario != user_id for match in users_repo.by_email(db, email)):
+            raise DomainError(409, 'correo_duplicado', 'El correo ya está registrado')
+        users_repo.create_client(db, user_id=user_id, data=data, password_hash=encoded,
+                                 role_id=role.nro, client_code=secrets.token_hex(5))
+        record(db, 'cliente_registrado', actor, peer, True)
+    return dict(idUsuario=user_id, nombre=data.nombre, correo=email, ci=data.ci)
+
+
 def create(db, data, actor, scope_id, peer):
     branch(scope_id, data.nroSuc)
     with transaction(db):
@@ -55,12 +80,19 @@ def create(db, data, actor, scope_id, peer):
             if user.tipo != 'A' and old.idusuarioemp != actor:
                 raise DomainError(409, 'operacion_duplicada', 'La operación pertenece a otra sesión de caja')
             return view(db, old)
-        if db.get(Cliente, data.idCliente) is None:
+        client = db.get(Cliente, data.idCliente) if data.idCliente else None
+        if data.idCliente and client is None:
             raise DomainError(404, 'cliente_no_encontrado', 'Selecciona un cliente registrado')
+        if client is not None and client.estado == 'inactivo':
+            # CU07: un cliente dado de baja no puede generar ventas nuevas.
+            raise DomainError(409, 'cliente_inactivo', 'El cliente está dado de baja')
         store = db.get(Sucursal, data.nroSuc)
         if store is None or store.estado != 'activo':
             raise DomainError(404, 'sucursal_no_encontrada', 'Sucursal no disponible')
         if data.nroReserva:
+            if client is None:
+                # CU24: una reserva pertenece a un cliente; no admite venta anónima.
+                raise DomainError(422, 'cliente_requerido', 'Indica el cliente de la reserva')
             row = db.scalar(select(Reserva).where(Reserva.nroreserva == data.nroReserva).with_for_update())
             if not row or row.idusuariocl != data.idCliente or row.nrosuc != data.nroSuc:
                 raise DomainError(404, 'reserva_no_encontrada', 'La reserva no corresponde a este cliente y sucursal')
@@ -87,7 +119,7 @@ def create(db, data, actor, scope_id, peer):
             gross += base * quantity
             discount += descuento_unitario(base, promos.get(product.idpromo)) * quantity
             details.append((key, quantity, base, descuento_unitario(base, promos.get(product.idpromo))))
-        row = Venta(idusuariocl=data.idCliente, idusuarioemp=actor if user.tipo == 'E' else None, nrosuc=data.nroSuc, nit=data.nit, nroreserva=data.nroReserva, claveoperacion=str(data.claveOperacion), estado='registrada', total=moneda(gross-discount), desc_aplicado=moneda(discount))
+        row = Venta(idusuariocl=client.idusuario if client else None, idusuarioemp=actor if user.tipo == 'E' else None, nrosuc=data.nroSuc, nit=data.nit, nroreserva=data.nroReserva, claveoperacion=str(data.claveOperacion), estado='registrada', total=moneda(gross-discount), desc_aplicado=moneda(discount))
         db.add(row); db.flush()
         # fechahora y nroventa los genera la base de datos; se refrescan antes de
         # construir la vista para no serializar un nroVenta/fecha nulos.

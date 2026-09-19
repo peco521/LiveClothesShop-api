@@ -15,6 +15,9 @@ def public_role(db, role_id: str):
     role = db.scalar(select(Rol).where(Rol.nro == role_id).with_for_update())
     if role is None:
         return None
+    # CU06: un rol dado de baja no puede representar el registro público.
+    if role.estado != "activo":
+        return None
     # CU01/CU02 require no business permissions. Fail closed if the configured
     # public role is assigned permissions or has been used by internal accounts.
     internal = db.scalar(select(Usuario.idusuario).where(

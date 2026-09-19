@@ -4,6 +4,7 @@ from app.modules.inventario_productos.shared.operaciones_access import access
 from app.modules.inventario_productos.shared.operaciones_referencias import add_references, peer
 from app.modules.inventario_productos.cu24_registrar_venta.services import ventas
 from app.modules.inventario_productos.cu24_registrar_venta.schemas.ventas import SaleInput, CashInput, ElectronicInput
+from app.modules.seguridad_accesos.cu07_clientes.schemas.cliente import ClienteCrear
 from sqlalchemy import select
 from app.modules.cliente_experiencia_compra.cu14_pago_electronico.services import checkout_stripe
 from app.modules.inventario_productos.shared.access import transaction
@@ -18,6 +19,13 @@ add_references(router, a24)
 def cash_customers(q: str = Query('', max_length=100), idUsuario: str | None = Query(None, max_length=100),
                    db=Depends(get_db), actor=Depends(a24)):
     return ventas.customers(db, q, idUsuario)
+
+
+@router.post('/clientes', status_code=201)
+def register_cash_customer(data: ClienteCrear, request: Request, db=Depends(get_db), actor=Depends(a24)):
+    # CU24: registra al cliente para esta venta sin cambiar la sesión de caja.
+    return ventas.register_client(db, data, request.app.state.settings,
+                                  request.app.state.passwords, actor[0], peer(request))
 
 
 @router.post('', status_code=201)

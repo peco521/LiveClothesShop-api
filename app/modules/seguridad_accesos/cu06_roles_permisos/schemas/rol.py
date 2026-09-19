@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 import unicodedata
 
 from pydantic import AfterValidator, BaseModel, StringConstraints, field_validator
@@ -44,6 +44,12 @@ class RolDetalle(BaseModel):
     nro: str
     descripcion: str
     esRolCliente: bool
+    # CU06: baja lógica del rol (la columna ya existe en la base de datos).
+    estado: Literal["activo", "inactivo"] = "activo"
+
+
+class EstadoCuenta(PublicInput):
+    activo: bool
 
 
 class RolesListado(BaseModel):

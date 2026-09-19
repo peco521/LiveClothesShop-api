@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.dependencies import require_permission
 from app.modules.seguridad_accesos.cu06_roles_permisos.schemas.rol import (
-    FuncionDetalle, Identifier, PermisosDetalle, PermisosReemplazar, RolCrear, RolDetalle, RolEditar, RolesListado,
+    EstadoCuenta, FuncionDetalle, Identifier, PermisosDetalle, PermisosReemplazar, RolCrear, RolDetalle, RolEditar, RolesListado,
 )
 from app.modules.seguridad_accesos.cu06_roles_permisos.services import rol
 
@@ -35,6 +35,13 @@ def functions(db: Session = Depends(get_db)):
 @router.get("/roles/{nro}", response_model=RolDetalle)
 def detail(nro: Identifier, request: Request, db: Session = Depends(get_db)):
     return rol.detail(rol.get(db, nro), request.app.state.settings)
+
+
+@router.patch("/roles/{nro}/estado-cuenta", response_model=RolDetalle)
+def set_role_state(nro: Identifier, data: EstadoCuenta, request: Request, db: Session = Depends(get_db),
+                   identity=Depends(cu06_identity)):
+    # CU06: baja lógica del rol. El rol público de clientes está protegido.
+    return rol.set_state(db, nro, data, request.app.state.settings, identity.usuario.idUsuario, peer(request))
 
 
 @router.patch("/roles/{nro}", response_model=RolDetalle)

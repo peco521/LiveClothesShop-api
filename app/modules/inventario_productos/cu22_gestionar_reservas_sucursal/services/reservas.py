@@ -1,5 +1,6 @@
-from datetime import date
+from datetime import date, datetime, timedelta
 from sqlalchemy import func, select
+from app.core.database import is_postgresql
 from app.core.errors import DomainError
 from app.modules.cliente_experiencia_compra.shared.models.comercio import Reserva, Venta
 from app.modules.cliente_experiencia_compra.shared.repositories import comercio
@@ -22,12 +23,31 @@ def release(db, row):
             left -= amount
 
 
+MARGEN_HORAS = repo.MARGEN_HORAS
+
+
 def expire(db, scope_id=None):
+    """CU22: vence reservas vencidas usando fecha + hora de atención + 3 horas.
+
+    En PostgreSQL la fuente de verdad es la PA `sp_marcar_reservas_vencidas`:
+    ella marca 'vencida' y libera la disponibilidad retenida una sola vez, así
+    que Python NO repite el proceso. El sustituto SQLite reproduce exactamente
+    la misma regla para las pruebas. No se vence una reserva sólo porque su
+    fecha sea anterior a hoy.
+    """
     with transaction(db):
-        query = select(Reserva).where(Reserva.estado.in_(['pendiente', 'confirmada']), Reserva.fechareserva < date.today()).order_by(Reserva.nroreserva).with_for_update()
+        if is_postgresql(db):
+            # La PA es la fuente de verdad: marca 'vencida' y libera en SQL una sola vez.
+            repo.vencer_con_procedimiento(db, MARGEN_HORAS)
+            return
+        limite = datetime.now() - timedelta(hours=MARGEN_HORAS)
+        query = select(Reserva).where(Reserva.estado.in_(['pendiente', 'confirmada'])
+                                      ).order_by(Reserva.nroreserva).with_for_update()
         if scope_id is not None:
             query = query.where(Reserva.nrosuc == scope_id)
         for row in db.scalars(query):
+            if datetime.combine(row.fechareserva, row.horaatencion) >= limite:
+                continue  # Todavía vigente dentro del margen de atención.
             release(db, row)
             row.estado = 'vencida'
             record(db, 'reserva_vencida', None, None, True)

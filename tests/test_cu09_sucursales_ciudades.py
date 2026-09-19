@@ -1,16 +1,18 @@
 """CU09: injected SQLite only; PostgreSQL contracts compiled without connections."""
 from datetime import timedelta
+from decimal import Decimal
 import re
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from sqlalchemy import event, select, text
+from sqlalchemy import event, func, select, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.schema import CreateTable
 
 from app.core.security import utcnow
+from app.integrations.geocoding import AddressNotFound, GeocodingUnavailable
 from app.modules.seguridad_accesos.models import Bitacora, Funcion, Rol, RolFuncion, Usuario
 from app.modules.seguridad_accesos.shared.models import Ciudad, Sucursal
 from app.modules.seguridad_accesos.shared.repositories import organizacion as repository
@@ -51,6 +53,96 @@ def branch(client, operator, factory):
 def audit(factory):
     with factory() as db:
         return [(row.accion, row.usuario_id, row.detalles) for row in db.scalars(select(Bitacora).order_by(Bitacora.id))]
+
+
+class FakeGeocoder:
+    """Sustituto determinista del proveedor: sin red, sin claves."""
+
+    def __init__(self, result=None, error=None):
+        self.calls = []
+        self._result = result
+        self._error = error
+
+    def locate(self, direccion, ciudad):
+        self.calls.append((direccion, ciudad))
+        if self._error is not None:
+            raise self._error
+        return self._result
+
+
+@pytest.fixture
+def geocoder(app):
+    fake = FakeGeocoder(result=(Decimal("-17.783333"), Decimal("-63.182222")))
+    app.state.geocoder = fake
+    return fake
+
+
+def branch_in_db(factory, **values):
+    with factory.begin() as db:
+        row = Sucursal(nombre="Antigua", direccion="Calle vieja 1", estado="activo", idciud=0, **values)
+        db.add(row)
+        db.flush()
+        return row.nro
+
+
+def test_branch_creation_stores_verified_coordinates(client, operator, factory, app, geocoder):
+    with factory.begin() as db:
+        db.add(Ciudad(id=0, nombre="Santa Cruz"))
+    response = client.post(BRANCHES, json={"nombre": "Central", "direccion": "Calle Real 10", "idCiud": 0})
+    assert response.status_code == 201, response.text
+    assert geocoder.calls == [("Calle Real 10", "Santa Cruz")]
+    body = response.json()
+    assert Decimal(str(body["latitud"])) == Decimal("-17.783333")
+    assert Decimal(str(body["longitud"])) == Decimal("-63.182222")
+    with factory() as db:
+        row = db.get(Sucursal, body["nro"])
+        assert Decimal(str(row.latitud)) == Decimal("-17.783333")
+
+
+def test_branch_creation_rejects_unknown_address(client, operator, factory, app):
+    with factory.begin() as db:
+        db.add(Ciudad(id=0, nombre="Santa Cruz"))
+    app.state.geocoder = FakeGeocoder(error=AddressNotFound())
+    before = audit(factory)
+    response = client.post(BRANCHES, json={"nombre": "Central", "direccion": "Calle inexistente 999", "idCiud": 0})
+    assert response.status_code == 422 and response.json()["error"]["code"] == "direccion_no_verificada"
+    with factory() as db:
+        assert db.scalar(select(func.count()).select_from(Sucursal)) == 0
+    assert audit(factory) == before
+
+
+def test_branch_provider_failure_is_not_address_not_found(client, operator, factory, app):
+    with factory.begin() as db:
+        db.add(Ciudad(id=0, nombre="Santa Cruz"))
+    for error in (GeocodingUnavailable(), TimeoutError("timeout")):
+        app.state.geocoder = FakeGeocoder(error=error)
+        response = client.post(BRANCHES, json={"nombre": "Central", "direccion": "Calle Real 10", "idCiud": 0})
+        assert response.status_code == 503 and response.json()["error"]["code"] == "geocodificacion_no_disponible"
+    with factory() as db:
+        assert db.scalar(select(func.count()).select_from(Sucursal)) == 0
+
+
+def test_legacy_null_coordinates_are_tolerated_and_edit_validates(client, operator, factory, app, geocoder):
+    with factory.begin() as db:
+        db.add(Ciudad(id=0, nombre="Santa Cruz"))
+    nro = branch_in_db(factory)
+    detail = client.get(BRANCHES + f"/{nro}")
+    assert detail.status_code == 200 and detail.json()["latitud"] is None and detail.json()["longitud"] is None
+    edited = client.patch(BRANCHES + f"/{nro}", json={"direccion": "Calle Nueva 20"})
+    assert edited.status_code == 200, edited.text
+    assert geocoder.calls == [("Calle Nueva 20", "Santa Cruz")]
+    assert Decimal(str(edited.json()["latitud"])) == Decimal("-17.783333")
+
+
+def test_edit_without_address_change_keeps_coordinates(client, operator, factory, app, geocoder):
+    with factory.begin() as db:
+        db.add(Ciudad(id=0, nombre="Santa Cruz"))
+    created = client.post(BRANCHES, json={"nombre": "Central", "direccion": "Calle Real 10", "idCiud": 0})
+    assert created.status_code == 201
+    geocoder.calls.clear()
+    edited = client.patch(BRANCHES + f"/{created.json()['nro']}", json={"nombre": "Renombrada"})
+    assert edited.status_code == 200 and geocoder.calls == []
+    assert Decimal(str(edited.json()["latitud"])) == Decimal("-17.783333")
 
 
 @pytest.mark.parametrize("method,path", ROUTES)

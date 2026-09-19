@@ -1,5 +1,6 @@
 from typing import Annotated, Literal
 from datetime import time
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -98,6 +99,10 @@ class SucursalDetalle(BaseModel):
     estado: Estado
     idCiud: int
     ciudad: CiudadDetalle
+    # CU09: coordenadas verificadas por el backend. NULL en sucursales antiguas
+    # o cuando la validación de direcciones está desactivada.
+    latitud: Decimal | None = None
+    longitud: Decimal | None = None
 
 
 class CiudadesFiltros(Input):

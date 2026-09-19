@@ -63,6 +63,7 @@ def detail(db, user):
         idUsuario=user.idusuario, **{key: getattr(user, column) for key, column in USER_FIELDS.items()},
         tipo=user.tipo, rol=RolResponse(nro=role.nro, descripcion=role.descripcion),
         empleado=EmpleadoPerfil(cod_emp=employee.cod_emp, cargo=employee.cargo, nroSuc=employee.nrosuc) if employee else None,
+        estado=employee.estado if employee else None,
         admin=AdminPerfil(cod_adm=admin.cod_adm) if admin else None,
     )
 
@@ -77,6 +78,9 @@ def validate_role(db, role_id, settings):
     role = repository.role(db, role_id)
     if role is None:
         raise DomainError(422, "rol_no_encontrado", "El rol indicado no existe")
+    # CU06: un rol dado de baja no puede asignarse a un empleado.
+    if role.estado != "activo":
+        raise DomainError(422, "rol_inactivo", "El rol seleccionado está inactivo")
     # public_role() rejects any internal user sharing CLIENTE_ROL_ID: that would
     # disable CU01. This is not a SuperAdmin or permission-subset policy.
     if role.nro == settings.cliente_rol_id:
@@ -103,7 +107,7 @@ def create_employee(db, data, settings, passwords, actor_id, peer):
                        **{column: getattr(data, key) for key, column in USER_FIELDS.items()})
         usuario.add(db, user)
         repository.add_employee(db, Empleado(idusuario=user.idusuario, cod_emp=repository.next_employee_code(db, lock=True),
-                                            cargo=data.cargo, nrosuc=data.nroSuc))
+                                            cargo=data.cargo, nrosuc=data.nroSuc, estado="activo"))
         record(db, "usuario_creado", actor_id, peer, True)
         record(db, "empleado_creado", actor_id, peer, True)
         result = detail(db, user)
@@ -142,6 +146,26 @@ def edit_employee(db, user_id, data, settings, actor_id, peer):
             record(db, "usuario_actualizado", actor_id, peer, True)
         if any(key in EMPLOYEE_FIELDS for key in changes):
             record(db, "empleado_actualizado", actor_id, peer, True)
+        result = detail(db, user)
+    return result
+
+
+def set_state(db, user_id, data, settings, actor_id, peer):
+    """CU05 baja lógica: desactiva o reactiva al empleado sin borrar su historial."""
+    with transaction(db):
+        before = continuidad.begin_change(db, actor_id, "CU05", settings.cliente_rol_id)
+        user = internal(db, user_id, lock=True)
+        if user.tipo != "E":
+            raise DomainError(404, "empleado_no_encontrado", "Empleado no encontrado")
+        _, employee = coherent_profiles(db, user)
+        estado = "activo" if data.activo else "inactivo"
+        if employee.estado != estado:
+            employee.estado = estado
+            db.flush()
+            # Un empleado inactivo no puede quedar como último usuario capaz de CU06.
+            continuidad.ensure_remaining(db, before, settings.cliente_rol_id)
+            record(db, "usuario_activado" if data.activo else "usuario_desactivado",
+                   actor_id, peer, True)
         result = detail(db, user)
     return result
 

@@ -1,6 +1,6 @@
 from sqlalchemy import func, select
 
-from app.modules.seguridad_accesos.models import Funcion, Rol, RolFuncion
+from app.modules.seguridad_accesos.models import Funcion, Rol, RolFuncion, Usuario
 
 
 def get(db, role_id, *, lock=False):
@@ -24,6 +24,11 @@ def assignments(db, role_id):
 
 def existing_functions(db, ids):
     return set(db.scalars(select(Funcion.id).where(Funcion.id.in_(ids))))
+
+
+def assigned_users(db, role_id):
+    """Usuarios (internos o clientes) que hoy tienen asignado el rol."""
+    return db.scalar(select(func.count()).select_from(Usuario).where(Usuario.nrorol == role_id))
 
 
 def add(db, role):

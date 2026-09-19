@@ -45,7 +45,9 @@ def operator(client, registered, credentials, factory):
 
 @pytest.fixture
 def customer(client, operator, registration):
-    response = client.post("/api/auth/registro", json=registration | {"correo": "cliente@example.com"})
+    # CU07 alta administrativa: crear el cliente NO debe cambiar la sesión del
+    # administrador (a diferencia del registro público de CU01, que inicia sesión).
+    response = client.post(BASE, json=registration | {"correo": "cliente@example.com"})
     assert response.status_code == 201
     response = client.get(BASE + "/" + response.json()["idUsuario"])
     assert response.status_code == 200
@@ -106,7 +108,8 @@ def test_cu07_only_and_no_cu06_catalog_dependency(client, operator, customer, fa
 
 
 def test_list_pagination_search_and_literal_wildcards(client, customer, registration):
-    assert client.post("/api/auth/registro", json=registration | {"correo": "otro@example.com", "nombres": "Zoe"}).status_code == 201
+    created = client.post(BASE, json=registration | {"correo": "otro@example.com", "nombres": "Zoe"})
+    assert created.status_code == 201
     result = client.get(BASE).json()
     assert result["total"] == 2 and result["offset"] == 0 and result["limit"] == 20
     assert all(row["tipo"] == "C" for row in result["items"])
@@ -167,10 +170,12 @@ def test_edit_allowlist_and_rollback(client, customer, factory, body):
     assert client.get(path).json() == customer and audit(factory) == before
 
 
-@pytest.mark.parametrize("body", [{}, {"activo": None}, {"activo": "false"}, {"activo": 0},
-                                   {"activo": False, "estado": "inactivo"}])
-def test_state_endpoint_retired_for_all_payloads(client, customer, body):
-    assert client.patch(BASE + "/" + customer["idUsuario"] + "/estado-cuenta", json=body).status_code == 404
+@pytest.mark.parametrize("body", [{}, {"activo": None}, {"activo": False, "estado": "inactivo"}])
+def test_state_payload_validation(client, customer, body):
+    # CU07: la baja lógica exige exactamente un booleano 'activo' (extra=forbid).
+    path = BASE + "/" + customer["idUsuario"]
+    assert client.patch(path + "/estado-cuenta", json=body).status_code == 422
+    assert client.get(path).json()["cliente"]["estado"] == "frecuente"
 
 
 def test_nullable_legacy_names_and_nonunique_ci_code(client, customer, factory, registration):
@@ -179,7 +184,7 @@ def test_nullable_legacy_names_and_nonunique_ci_code(client, customer, factory, 
     path = BASE + "/" + customer["idUsuario"]
     assert client.get(path).json()["nombres"] is None
     assert client.patch(path, json={"telefono": "999"}).json()["nombres"] is None
-    other = client.post("/api/auth/registro", json=registration | {"correo": "otro@example.com"}).json()["idUsuario"]
+    other = client.post(BASE, json=registration | {"correo": "otro@example.com"}).json()["idUsuario"]
     with factory.begin() as db:
         db.get(Cliente, other).cod_cl = customer["cliente"]["cod_cl"]
     assert client.get(BASE).json()["total"] == 2
@@ -189,7 +194,7 @@ def test_nullable_legacy_names_and_nonunique_ci_code(client, customer, factory, 
 def test_global_normalized_email_uniqueness(client, customer, factory, operator, registration, duplicate_kind):
     target = operator
     if duplicate_kind == "client":
-        target = client.post("/api/auth/registro", json=registration | {"correo": "otro@example.com"}).json()["idUsuario"]
+        target = client.post(BASE, json=registration | {"correo": "otro@example.com"}).json()["idUsuario"]
     with factory.begin() as db:
         db.get(Usuario, target).correo = " DUPLICADO@EXAMPLE.COM "
     before = audit(factory)
@@ -230,16 +235,25 @@ def test_noop_no_dml_audit_or_credential_invalidation(client, customer, factory)
     assert credential_states(factory, user_id) == [None, None]
 
 
-def test_retired_account_state_does_not_modify_data_or_recoveries(client, customer, factory, operator):
+def test_account_state_deactivation_keeps_data_and_recoveries(client, customer, factory, operator):
+    # CU07 baja lógica: sólo cambia el estado comercial; el usuario, sus datos y
+    # sus tokens de recuperación se conservan, y cada transición queda auditada.
     user_id = customer["idUsuario"]
     seed_credentials(factory, user_id)
     before = audit(factory)
     path = BASE + "/" + user_id + "/estado-cuenta"
-    for active in (False, True):
-        assert client.patch(path, json={"activo": active}).status_code == 404
-    assert client.get(BASE + "/" + user_id).json() == customer
+    deactivated = client.patch(path, json={"activo": False})
+    assert deactivated.status_code == 200 and deactivated.json()["cliente"]["estado"] == "inactivo"
+    assert client.get(BASE + "/" + user_id).json()["cliente"]["estado"] == "inactivo"
     assert credential_states(factory, user_id) == [None, None]
-    assert audit(factory) == before
+    restored = client.patch(path, json={"activo": True})
+    assert restored.status_code == 200 and restored.json()["cliente"]["estado"] == "frecuente"
+    assert audit(factory)[len(before):] == [
+        ("cliente_desactivado", operator, {"resultado": "exito"}),
+        ("cliente_activado", operator, {"resultado": "exito"}),
+    ]
+    with factory() as db:
+        assert db.get(Usuario, user_id) is not None and db.get(Cliente, user_id) is not None
 
 
 def test_password_change_invalidates_customer_access(client, customer, factory, app, registration):
@@ -253,15 +267,19 @@ def test_password_change_invalidates_customer_access(client, customer, factory, 
         assert client.get(BASE).status_code == 200
 
 
-@pytest.mark.parametrize("commercial_state", ["frecuente", "casual", "inactivo"])
-def test_commercial_state_is_readonly_and_does_not_block_login(client, customer, factory, app, registration, commercial_state):
+@pytest.mark.parametrize("commercial_state,expected_login", [
+    ("frecuente", 200), ("casual", 200), ("inactivo", 401)])
+def test_client_state_controls_login(client, customer, factory, app, registration, commercial_state, expected_login):
+    # CU07: 'inactivo' es la baja lógica (impide iniciar sesión) mientras que
+    # frecuente/casual mantienen el acceso; el estado se expone en el detalle.
     with factory.begin() as db:
         db.get(Cliente, customer["idUsuario"]).estado = commercial_state
     path = BASE + "/" + customer["idUsuario"]
     assert client.get(path).json()["cliente"]["estado"] == commercial_state
     with closing(TestClient(app)) as other:
         other.headers.update({"Origin": "http://localhost:4200", "X-CSRF-Protection": "1"})
-        assert other.post("/api/auth/login", json={"correo": "cliente@example.com", "contrasena": registration["contrasena"]}).status_code == 200
+        assert other.post("/api/auth/login", json={"correo": "cliente@example.com",
+                                                   "contrasena": registration["contrasena"]}).status_code == expected_login
 
 
 @pytest.mark.parametrize("proportions", [{"opaque": [1, 2]}, [1, "opaque"], 42, "opaque", True, None])
@@ -317,7 +335,7 @@ def test_incoherent_profiles_and_roles_controlled_no_repair(client, customer, fa
 
 
 def test_inconsistent_candidates_detected_on_page_not_hidden(client, customer, factory, registration):
-    other = client.post("/api/auth/registro", json=registration | {"correo": "z@example.com", "apellidoPat": "Z"}).json()["idUsuario"]
+    other = client.post(BASE, json=registration | {"correo": "z@example.com", "apellidoPat": "Z"}).json()["idUsuario"]
     with factory.begin() as db:
         db.delete(db.get(Cliente, other))
     first = client.get(BASE + "?limit=1")
@@ -415,7 +433,7 @@ def test_csrf_cors_no_store_and_namespace(client, customer):
     assert client.patch(path, json={"telefono": "123"}).status_code == 403
     response = client.options(path, headers={"Access-Control-Request-Method": "PATCH"})
     assert response.status_code == 204
-    assert response.headers["access-control-allow-methods"] == "GET, PATCH, OPTIONS"
+    assert response.headers["access-control-allow-methods"] == "GET, POST, PATCH, OPTIONS"
     assert response.headers["access-control-allow-credentials"] == "true"
     assert client.options(path, headers={"Origin": "https://evil.example"}).status_code == 403
     for target in (BASE, path, BASE + "/missing"):
@@ -426,17 +444,18 @@ def test_csrf_cors_no_store_and_namespace(client, customer):
     assert client.options("/api/admin/clientes-ajenos").status_code != 204
 
 
-def test_contract_no_creation_delete_commercial_filter_or_proportions(app, client, customer, factory, caplog):
+def test_contract_creation_state_and_no_physical_delete(app, client, customer, factory, caplog):
     schema = app.openapi()
     paths = schema["paths"]
-    assert set(paths[BASE]) == {"get"}
+    # CU07: alta administrativa y baja lógica; el borrado físico sigue sin existir.
+    assert set(paths[BASE]) == {"get", "post"}
     assert set(paths[BASE + "/{idUsuario}"]) == {"get", "patch"}
-    assert BASE + "/{idUsuario}/estado-cuenta" not in paths
+    assert set(paths[BASE + "/{idUsuario}/estado-cuenta"]) == {"patch"}
     params = {p["name"] for p in paths[BASE]["get"]["parameters"]}
     assert params == {"offset", "limit", "q"}
     for name in ("ClienteDetalle", "ClientePerfil", "ClienteEditar"):
         assert "proporciones" not in schema["components"]["schemas"][name]["properties"]
-    assert client.post(BASE, json={}).status_code == 405
+    assert client.post(BASE, json={}).status_code == 422
     assert client.delete(BASE + "/" + customer["idUsuario"]).status_code == 405
     output = client.get(BASE).text + client.get(BASE + "/" + customer["idUsuario"]).text + json.dumps(audit(factory)) + caplog.text
     assert not any(word in output for word in ("contrasena", "digest", "$argon2", "proporciones"))
@@ -447,3 +466,49 @@ def test_existing_models_match_schema_without_connection():
     assert "PRIMARY KEY (idusuario)" in ddl and "cod_cl VARCHAR(10) NOT NULL" in ddl
     assert "JSONB" in ddl and "UNIQUE" not in ddl
     assert "'frecuente', 'casual', 'inactivo'" in ddl
+
+
+def test_admin_creates_client_without_losing_session(client, operator, registration, factory):
+    """CU07 alta administrativa: el administrador conserva su propia sesión."""
+    created = client.post(BASE, json=registration | {"correo": "nuevo@example.com"})
+    assert created.status_code == 201
+    body = created.json()
+    assert body["cliente"]["estado"] == "frecuente" and body["rol"]["nro"] == "cliente"
+    assert "activo" not in body
+    # La sesión sigue siendo la del operador, no la del cliente recién creado.
+    assert client.get("/api/auth/me").json()["usuario"]["idUsuario"] == operator
+    assert client.get(BASE).status_code == 200
+    assert audit(factory)[-1] == ("cliente_registrado", operator, {"resultado": "exito"})
+
+
+def test_duplicate_email_blocks_creation_and_session_is_untouched(client, operator, customer, registration):
+    duplicated = client.post(BASE, json=registration | {"correo": " CLIENTE@EXAMPLE.COM "})
+    assert duplicated.status_code == 409 and duplicated.json()["error"]["code"] == "correo_duplicado"
+    assert client.get("/api/auth/me").json()["usuario"]["idUsuario"] == operator
+
+
+def test_client_deactivation_and_reactivation(client, app, customer, operator, registration, factory):
+    """CU07 baja lógica: inactivo impide iniciar sesión y se puede reactivar."""
+    path = BASE + "/" + customer["idUsuario"]
+    login = {"correo": "cliente@example.com", "contrasena": registration["contrasena"]}
+    before = audit(factory)
+    off = client.patch(path + "/estado-cuenta", json={"activo": False})
+    assert off.status_code == 200 and off.json()["cliente"]["estado"] == "inactivo"
+    with closing(TestClient(app)) as other:
+        other.headers.update({"Origin": "http://localhost:4200", "X-CSRF-Protection": "1"})
+        assert other.post("/api/auth/login", json=login).status_code == 401
+    with factory() as db:
+        assert db.get(Usuario, customer["idUsuario"]) is not None
+        assert db.get(Cliente, customer["idUsuario"]) is not None
+    on = client.patch(path + "/estado-cuenta", json={"activo": True})
+    assert on.status_code == 200 and on.json()["cliente"]["estado"] == "frecuente"
+    with closing(TestClient(app)) as other:
+        other.headers.update({"Origin": "http://localhost:4200", "X-CSRF-Protection": "1"})
+        assert other.post("/api/auth/login", json=login).status_code == 200
+    # Sólo se auditan las transiciones de estado (los intentos de login del
+    # cliente en medio quedan en sus propias acciones de bitácora).
+    state_events = [row for row in audit(factory)[len(before):] if row[0].startswith("cliente_")]
+    assert state_events == [
+        ("cliente_desactivado", operator, {"resultado": "exito"}),
+        ("cliente_activado", operator, {"resultado": "exito"}),
+    ]

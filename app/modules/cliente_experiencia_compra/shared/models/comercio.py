@@ -84,7 +84,9 @@ class Venta(Base):
     total: Mapped[Decimal] = mapped_column(Numeric(10, 2))
     desc_aplicado: Mapped[Decimal] = mapped_column(Numeric(10, 2))
     estado: Mapped[str] = mapped_column(String(30), server_default="registrada")
-    idusuariocl: Mapped[str] = mapped_column(ForeignKey("cliente.idusuario", onupdate="CASCADE", ondelete="CASCADE"))
+    # CU24: la venta anónima de caja no identifica cliente. La columna debe admitir
+    # NULL en PostgreSQL (database/sql/12_habilitar_cu24_venta_anonima.sql).
+    idusuariocl: Mapped[str | None] = mapped_column(ForeignKey("cliente.idusuario", onupdate="CASCADE", ondelete="CASCADE"))
     idusuarioemp: Mapped[str | None] = mapped_column(ForeignKey("empleado.idusuario", onupdate="CASCADE", ondelete="CASCADE"))
     nrosuc: Mapped[int] = mapped_column(ForeignKey("sucursal.nro", onupdate="CASCADE", ondelete="CASCADE"))
     idcarrito: Mapped[int | None] = mapped_column(ForeignKey("carrito.idcarrito", onupdate="CASCADE", ondelete="CASCADE"))

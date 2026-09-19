@@ -1,5 +1,7 @@
-from sqlalchemy import CheckConstraint, ForeignKey, Identity, Integer, SmallInteger, String
+from sqlalchemy import CheckConstraint, ForeignKey, Identity, Integer, Numeric, SmallInteger, String
 from sqlalchemy.orm import Mapped, mapped_column
+
+from decimal import Decimal
 
 from app.core.database import Base
 
@@ -21,3 +23,8 @@ class Sucursal(Base):
     estado: Mapped[str] = mapped_column(String(20), server_default="activo")
     idciud: Mapped[int] = mapped_column(SmallInteger, ForeignKey(
         "ciudad.id", onupdate="CASCADE", ondelete="RESTRICT"))
+    # CU09: coordenadas verificadas con el proveedor de direcciones. La columna
+    # ya existe en la base de datos (numeric(9,6) NULL) y las sucursales antiguas
+    # pueden conservar ambos valores en NULL; no requiere migración.
+    latitud: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
+    longitud: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))

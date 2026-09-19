@@ -1,0 +1,25 @@
+﻿def test_nullable_legacy_names_and_nonunique_ci_code(client, customer, factory, registration):
+    with factory.begin() as db:
+        db.get(Usuario, customer["idUsuario"]).nombre = None
+    path = BASE + "/" + customer["idUsuario"]
+    assert client.get(path).json()["nombres"] is None
+    assert client.patch(path, json={"telefono": "999"}).json()["nombres"] is None
+    other = client.post("/api/auth/registro", json=registration | {"correo": "otro@example.com"}).json()["idUsuario"]
+    with factory.begin() as db:
+        db.get(Cliente, other).cod_cl = customer["cliente"]["cod_cl"]
+    assert client.get(BASE).json()["total"] == 2
+
+
+@pytest.mark.parametrize("duplicate_kind", ["internal", "client"])
+def test_global_normalized_email_uniqueness(client, customer, factory, operator, registration, duplicate_kind):
+    target = operator
+    if duplicate_kind == "client":
+        target = client.post("/api/auth/registro", json=registration | {"correo": "otro@example.com"}).json()["idUsuario"]
+    with factory.begin() as db:
+        db.get(Usuario, target).correo = " DUPLICADO@EXAMPLE.COM "
+    before = audit(factory)
+    response = client.patch(BASE + "/" + customer["idUsuario"], json={"correo": " duplicado@example.com "})
+    assert response.status_code == 409 and response.json()["error"]["code"] == "correo_duplicado"
+    assert audit(factory) == before
+
+

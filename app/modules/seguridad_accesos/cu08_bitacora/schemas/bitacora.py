@@ -9,7 +9,7 @@ Accion = Literal[
     "cliente_registrado", "login_correcto", "login_rechazado", "logout_correcto",
     "recuperacion_solicitada", "contrasena_restablecida", "usuario_creado", "empleado_creado",
     "usuario_actualizado", "empleado_actualizado", "usuario_activado", "usuario_desactivado",
-    "rol_creado", "rol_actualizado", "permisos_rol_actualizados",
+    "rol_creado", "rol_actualizado", "permisos_rol_actualizados", "rol_activado", "rol_desactivado",
     "cliente_actualizado", "cliente_activado", "cliente_desactivado",
     "ciudad_creada", "ciudad_actualizada", "sucursal_creada", "sucursal_actualizada", "sucursal_estado_actualizado",
     "reserva_creada", "reserva_cancelada", "reserva_vencida",

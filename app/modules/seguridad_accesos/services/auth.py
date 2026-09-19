@@ -9,7 +9,7 @@ from app.core.database import is_postgresql
 from app.core.errors import DomainError
 from app.core.security import digest, new_credential, utcnow
 from app.modules.seguridad_accesos.models import RecuperacionContrasena, Usuario
-from app.modules.seguridad_accesos.repositories import cliente, rol, usuario
+from app.modules.seguridad_accesos.repositories import rol, usuario
 from app.modules.seguridad_accesos.repositories import recuperacion_contrasena as recovery
 from app.modules.seguridad_accesos.schemas.auth import AuthResponse, RegistroResponse, RolResponse, UsuarioResponse
 from app.modules.seguridad_accesos.services.bitacora import record
@@ -19,7 +19,8 @@ def authentication_failed():
     return DomainError(401, "autenticacion_rechazada", "No se pudo autenticar la solicitud")
 
 
-def register(db, data, settings, passwords, peer):
+def register(db, data, settings, passwords, peer, access_tokens):
+    credential = None
     email = str(data.correo)
     # Prepare the configured password representation before the write transaction.
     encoded = passwords.hash(data.contrasena.get_secret_value())
@@ -31,40 +32,38 @@ def register(db, data, settings, passwords, peer):
             if rol.public_role(db, settings.cliente_rol_id) is None:
                 raise DomainError(503, "registro_no_disponible", "El registro no está disponible")
             client_code = secrets.token_hex(5)
-            if is_postgresql(db):
-                usuario.registrar_cliente(
-                    db, user_id=user_id, ci=data.ci, nombre=data.nombre,
-                    apellido_pat=data.apellidoPat, apellido_mat=data.apellidoMat,
-                    sexo=data.sexo, correo=email, telefono=data.telefono,
-                    direccion=data.direccion, password_hash=encoded,
-                    fecha_nac=data.fechaNac, role_id=settings.cliente_rol_id,
-                    client_code=client_code,
-                )
-            else:
-                # SQLite se conserva como sustituto de pruebas; la BD oficial
-                # PostgreSQL usa el procedimiento almacenado anterior.
-                user = Usuario(
-                    idusuario=user_id, ci=data.ci, nombre=data.nombre,
-                    apellidopat=data.apellidoPat, apellidomat=data.apellidoMat,
-                    sexo=data.sexo, correo=email, telefono=data.telefono,
-                    direccion=data.direccion, fechanac=data.fechaNac,
-                    contrasena=encoded, tipo="C", nrorol=settings.cliente_rol_id,
-                )
-                usuario.add(db, user)
-                # cod_cl no es UNIQUE en el esquema oficial.
-                cliente.add(db, user_id, client_code)
+            usuario.create_client(db, user_id=user_id, data=data, password_hash=encoded,
+                                  role_id=settings.cliente_rol_id, client_code=client_code)
             record(db, "cliente_registrado", user_id, peer, True)
+            # CU01: el registro público abre sesión con el mismo mecanismo que el
+            # login (token en memoria + huella de la contraseña) y su misma auditoría.
+            account = db.get(Usuario, user_id)
+            if account is None:
+                raise DomainError(503, "registro_no_disponible", "No se pudo completar el registro")
+            expires = utcnow() + timedelta(hours=settings.session_hours)
+            response = RegistroResponse(idUsuario=user_id, correo=email,
+                                        sesion=public_identity(db, account, expires))
+            credential = access_tokens.issue(account.idusuario, account.contrasena, expires)
     except IntegrityError:
+        if credential is not None:
+            access_tokens.revoke(credential)
         # The transaction has rolled back, including a partially-created profile.
         if usuario.by_email(db, email):
             raise DomainError(409, "correo_duplicado", "El correo ya está registrado") from None
         raise DomainError(503, "registro_no_disponible", "No se pudo completar el registro") from None
-    return RegistroResponse(idUsuario=user_id, correo=email)
+    except Exception:
+        # Nunca dejar un acceso emitido si la operación no quedó confirmada.
+        if credential is not None:
+            access_tokens.revoke(credential)
+        raise
+    return response, credential
 
 
 def public_identity(db, user, expires):
     role = rol.get(db, user.nrorol)
-    if role is None:
+    # CU06: un rol dado de baja no autoriza ninguna función. CU05/CU07: una
+    # cuenta dada de baja no inicia sesión ni continúa con una sesión abierta.
+    if role is None or role.estado != "activo" or usuario.account_blocked(db, user):
         raise authentication_failed()
     return AuthResponse(
         usuario=UsuarioResponse(idUsuario=user.idusuario, tipo=user.tipo, nombre=user.nombre, correo=user.correo),

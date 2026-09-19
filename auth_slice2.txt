@@ -1,0 +1,132 @@
+﻿def test_profile_failure_rolls_back(client, factory, registration, monkeypatch, failure):
+    def fail(db, user_id, code):
+        assert db.get(Usuario, user_id) is not None
+        if failure == "integrity":
+            raise IntegrityError("insert", None, Exception("simulated"))
+        raise RuntimeError("simulated")
+    monkeypatch.setattr(cliente, "add", fail)
+    assert client.post("/api/auth/registro", json=registration).status_code in {500, 503}
+    with factory() as db:
+        assert count(db, Usuario) == count(db, Cliente) == count(db, Bitacora) == 0
+
+
+def test_actual_profile_constraint_rolls_back(client, factory, registration, monkeypatch):
+    def invalid_profile(db, user_id, code):
+        db.add(Cliente(idusuario=user_id, cod_cl=None))
+        db.flush()
+    monkeypatch.setattr(cliente, "add", invalid_profile)
+    assert client.post("/api/auth/registro", json=registration).status_code == 503
+    with factory() as db:
+        assert count(db, Usuario) == count(db, Cliente) == count(db, Bitacora) == 0
+
+
+def test_unsafe_public_role_rejected(client, factory, registration):
+    with factory.begin() as db:
+        db.add(Funcion(id="test_perm", descripcion="Prueba"))
+        db.flush()
+        db.add(RolFuncion(nrorol="cliente", idfun="test_perm", descripcion="Prueba"))
+    assert client.post("/api/auth/registro", json=registration).status_code == 503
+    with factory() as db:
+        assert count(db, Usuario) == 0
+
+
+def test_missing_public_role_rejected(client, factory, registration):
+    with factory.begin() as db:
+        db.delete(db.get(Rol, "cliente"))
+    assert client.post("/api/auth/registro", json=registration).status_code == 503
+
+
+def test_public_role_used_by_internal_user_rejected(client, factory, registered, registration):
+    with factory.begin() as db:
+        db.get(Usuario, registered["idUsuario"]).tipo = "E"
+    registration["correo"] = "new@example.com"
+    assert client.post("/api/auth/registro", json=registration).status_code == 503
+
+
+def test_login_and_digest(client, factory, registered, credentials, settings):
+    response = client.post("/api/auth/login", json=credentials)
+    assert response.status_code == 200
+    assert response.json()["usuario"]["idUsuario"] == registered["idUsuario"]
+    assert response.json()["rol"]["nro"] == "cliente"
+    assert response.json()["permisos"] == []
+    assert "HttpOnly" in response.headers["set-cookie"]
+    assert "SameSite=lax" in response.headers["set-cookie"]
+    assert "Path=/api" in response.headers["set-cookie"]
+    credential = client.cookies.get(settings.cookie_name)
+    assert len(credential) == 43
+    with factory() as db:
+        store = client.app.state.access_tokens
+        access = store.get(credential)
+        assert digest(credential) in store._entries and credential not in store._entries
+        assert access.usuario_id == registered["idUsuario"]
+        assert timedelta(hours=7, minutes=59) < access.expira_en - utcnow() <= timedelta(hours=8)
+        assert len(store._entries) == 1
+    assert client.get("/api/auth/me").status_code == 200
+
+
+@pytest.mark.parametrize("case", ["wrong_password", "absent", "legacy_hash"])
+def test_generic_login_failure(client, factory, registered, credentials, case):
+    if case == "wrong_password":
+        credentials["contrasena"] = "Otra frase incorrecta"
+    elif case == "absent":
+        credentials["correo"] = "absent@example.com"
+    else:
+        with factory.begin() as db:
+            user = db.get(Usuario, registered["idUsuario"])
+            user.contrasena = "unsupported-legacy-value"
+    response = client.post("/api/auth/login", json=credentials)
+    assert response.status_code == 401
+    assert response.json() == {"error": {"code": "autenticacion_rechazada",
+                                        "message": "No se pudo autenticar la solicitud"}}
+    assert "set-cookie" not in response.headers
+    with factory() as db:
+        assert not client.app.state.access_tokens._entries
+        event = db.scalar(select(Bitacora).where(Bitacora.accion == "login_rechazado"))
+        assert event.usuario_id is None
+        assert event.detalles == {"resultado": "rechazado"}
+
+
+@pytest.mark.parametrize("case", ["expired", "revoked", "password_changed", "tampered"])
+def test_reject_invalid_session(client, factory, registered, credentials, settings, case, monkeypatch):
+    assert client.post("/api/auth/login", json=credentials).status_code == 200
+    token = client.cookies.get(settings.cookie_name)
+    if case == "tampered":
+        client.cookies.clear()
+        client.cookies.set(settings.cookie_name, "x" * 43, path="/api")
+    elif case == "expired":
+        monkeypatch.setattr("app.core.access_tokens.utcnow", lambda: utcnow() + timedelta(hours=9))
+    elif case == "revoked":
+        client.app.state.access_tokens.revoke(token)
+    else:
+        with factory.begin() as db:
+            db.get(Usuario, registered["idUsuario"]).contrasena = "changed-password-hash"
+    assert client.get("/api/auth/me").status_code == 401
+
+
+def test_no_credentials(client):
+    assert client.get("/api/auth/me").status_code == 401
+
+
+def test_bearer_and_ambiguous_identity(client, registered, credentials, settings):
+    client.post("/api/auth/login", json=credentials)
+    token = client.cookies.get(settings.cookie_name)
+    headers = {"Authorization": f"Bearer {token}"}
+    assert client.get("/api/auth/me", headers=headers).status_code == 401
+    client.cookies.clear()
+    assert client.get("/api/auth/me", headers=headers).status_code == 200
+
+
+def test_current_permissions_read_from_database(client, factory, registered, credentials):
+    client.post("/api/auth/login", json=credentials)
+    with factory.begin() as db:
+        db.add(Rol(nro="test_role", descripcion="Prueba"))
+        db.add(Funcion(id="test_perm", descripcion="Prueba"))
+        db.flush()
+        db.add(RolFuncion(nrorol="test_role", idfun="test_perm", descripcion="Prueba"))
+        db.get(Usuario, registered["idUsuario"]).nrorol = "test_role"
+    result = client.get("/api/auth/me").json()
+    assert result["rol"]["nro"] == "test_role"
+    assert result["permisos"] == ["test_perm"]
+
+
+def test_no_sensitive_response_audit_or_logs(client, factory, registered, credentials, settings, caplog):

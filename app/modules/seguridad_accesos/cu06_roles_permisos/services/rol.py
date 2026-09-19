@@ -34,7 +34,8 @@ def get(db, role_id, *, lock=False):
 
 
 def detail(role, settings):
-    return RolDetalle(nro=role.nro, descripcion=role.descripcion, esRolCliente=role.nro == settings.cliente_rol_id)
+    return RolDetalle(nro=role.nro, descripcion=role.descripcion,
+                      esRolCliente=role.nro == settings.cliente_rol_id, estado=role.estado)
 
 
 def list_roles(db, settings, offset, limit):
@@ -57,7 +58,7 @@ def create(db, data, settings, actor_id, peer):
         continuidad.begin_change(db, actor_id, "CU06", settings.cliente_rol_id)
         if repository.get(db, data.nro) is not None:
             raise DomainError(409, "rol_duplicado", "El identificador del rol ya existe")
-        role = Rol(nro=data.nro, descripcion=data.descripcion)
+        role = Rol(nro=data.nro, descripcion=data.descripcion, estado="activo")
         repository.add(db, role)
         record_role(db, "rol_creado", actor_id, peer, role.nro)
         result = detail(role, settings)
@@ -75,10 +76,36 @@ def edit(db, role_id, data, settings, actor_id, peer):
     return result
 
 
+def set_state(db, role_id, data, settings, actor_id, peer):
+    """CU06 baja lógica del rol: deja de autorizar y de poder asignarse."""
+    with transaction(db):
+        before = continuidad.begin_change(db, actor_id, "CU06", settings.cliente_rol_id)
+        role = get(db, role_id, lock=True)
+        estado = "activo" if data.activo else "inactivo"
+        if not data.activo:
+            if role.nro == settings.cliente_rol_id:
+                raise DomainError(409, "rol_cliente_protegido",
+                                  "El rol público de clientes no puede desactivarse")
+            if repository.assigned_users(db, role_id) > 0:
+                raise DomainError(409, "rol_con_usuarios",
+                                  "Reasigna a los usuarios de este rol antes de desactivarlo")
+        if role.estado != estado:
+            role.estado = estado
+            db.flush()
+            # Desactivar un rol no puede dejar el sistema sin usuarios de CU06.
+            continuidad.ensure_remaining(db, before, settings.cliente_rol_id)
+            record_role(db, "rol_activado" if data.activo else "rol_desactivado",
+                        actor_id, peer, role.nro)
+        result = detail(role, settings)
+    return result
+
+
 def replace_permissions(db, role_id, data, settings, actor_id, peer):
     with transaction(db):
         before = continuidad.begin_change(db, actor_id, "CU06", settings.cliente_rol_id)
         role = get(db, role_id, lock=True)
+        if role.estado != "activo":
+            raise DomainError(409, "rol_inactivo", "El rol está inactivo; reactívalo antes de cambiar sus permisos")
         desired = set(data.permisos)
         if role.nro == settings.cliente_rol_id and desired:
             raise DomainError(422, "rol_cliente_sin_funciones", "El rol cliente no puede recibir funciones")

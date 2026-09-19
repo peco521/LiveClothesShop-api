@@ -60,6 +60,12 @@ def registration():
 def registered(client, registration):
     result = client.post("/api/auth/registro", json=registration)
     assert result.status_code == 201
+    # CU01: el registro público deja la sesión iniciada. Las suites existentes
+    # verifican login/sesión partiendo de un cliente anónimo, por lo que aquí se
+    # descarta esa sesión de registro; el nuevo contrato se comprueba en
+    # tests/test_auth.py::test_registration.
+    client.app.state.access_tokens._entries.clear()
+    client.cookies.clear()
     return result.json()
 
 

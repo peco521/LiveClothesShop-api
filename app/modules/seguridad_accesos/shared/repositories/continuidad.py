@@ -1,7 +1,8 @@
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from app.core.errors import DomainError
 from app.modules.seguridad_accesos.models import Funcion, Rol, RolFuncion, Usuario
+from app.modules.seguridad_accesos.cu05_usuarios_empleados.models import Empleado
 
 
 def lock(db):
@@ -23,11 +24,19 @@ def actor(db, actor_id):
 
 
 def has_permission(db, role_id, permission):
+    # CU06: un rol dado de baja no autoriza ninguna función, ni siquiera a los
+    # usuarios que ya lo tenían asignado.
     return db.scalar(select(RolFuncion.idfun).join(Rol, Rol.nro == RolFuncion.nrorol).where(
-        RolFuncion.nrorol == role_id, RolFuncion.idfun == permission)) is not None
+        RolFuncion.nrorol == role_id, RolFuncion.idfun == permission,
+        Rol.estado == "activo")) is not None
 
 
 def eligible_count(db, public_role_id):
+    # CU05/CU06: un rol inactivo o un empleado dado de baja ya no cuenta como
+    # usuario capaz de administrar CU06.
     return db.scalar(select(func.count()).select_from(Usuario).join(Rol, Rol.nro == Usuario.nrorol)
-                     .join(RolFuncion, RolFuncion.nrorol == Rol.nro).where(
-                         Rol.nro != public_role_id, RolFuncion.idfun == "CU06"))
+                     .join(RolFuncion, RolFuncion.nrorol == Rol.nro)
+                     .outerjoin(Empleado, Empleado.idusuario == Usuario.idusuario).where(
+                         Rol.nro != public_role_id, RolFuncion.idfun == "CU06",
+                         Rol.estado == "activo",
+                         or_(Usuario.tipo != "E", Empleado.estado == "activo")))

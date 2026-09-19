@@ -5,7 +5,7 @@ cantDisp = disponible. Crear disminuye cantDisp; cancelar/vencer la devuelve.
 Todo ocurre en una sola transacción con filas de inventario bloqueadas.
 """
 
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from contextlib import contextmanager
 
@@ -179,17 +179,23 @@ def liberar_vencidas(db, user_id: str, hoy, peer):
             record(db, "reserva_vencida", user_id, peer, True)
         return actuales
 
-    # Sustituto de CALL para las pruebas SQLite.
+    # Sustituto de CALL para las pruebas SQLite: misma regla y misma cobertura
+    # que la PA (pendiente/confirmada con margen sobre fecha + hora de atención),
+    # devolviendo la disponibilidad una sola vez.
     liberadas: set[int] = set()
-    for row in repository.vencidas(db, user_id, hoy):
-        locked = repository.locked_reserva(db, row.nroreserva)
-        if locked is None or locked.estado != "pendiente" or locked.fechareserva >= hoy:
-            continue
-        detalles = repository.detalles(db, locked.nroreserva)
-        _devolver_disponibilidad(db, locked.nrosuc, detalles)
-        locked.estado = "vencida"
-        record(db, "reserva_vencida", user_id, peer, True)
-        liberadas.add(locked.nroreserva)
+    limite = datetime.now() - timedelta(hours=repository.MARGEN_HORAS)
+    for estado in ("pendiente", "confirmada"):
+        for row in repository.reservas_en_estado(db, user_id, estado):
+            locked = repository.locked_reserva(db, row.nroreserva)
+            if locked is None or locked.estado not in {"pendiente", "confirmada"}:
+                continue
+            if datetime.combine(locked.fechareserva, locked.horaatencion) >= limite:
+                continue
+            detalles = repository.detalles(db, locked.nroreserva)
+            _devolver_disponibilidad(db, locked.nrosuc, detalles)
+            locked.estado = "vencida"
+            record(db, "reserva_vencida", user_id, peer, True)
+            liberadas.add(locked.nroreserva)
     return liberadas
 
 

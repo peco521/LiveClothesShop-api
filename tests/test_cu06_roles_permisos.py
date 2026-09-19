@@ -65,7 +65,8 @@ def test_list_detail_functions_and_metadata(client, manager, factory):
     assert client.get(ROLES + "?offset=1&limit=1").json()["items"] == rows["items"][1:2]
     assert client.get(ROLES + "?offset=999").json()["items"] == []
     public = client.get(ROLES + "/cliente").json()
-    assert public == {"nro": "cliente", "descripcion": "Cliente", "esRolCliente": True}
+    assert public == {"nro": "cliente", "descripcion": "Cliente", "esRolCliente": True,
+                      "estado": "activo"}
     assert client.get(ROLES + "/gestor").json()["esRolCliente"] is False
     assert client.get(ROLES + "/cliente/permisos").json() == {
         "nroRol": "cliente", "esRolCliente": True, "permisos": []}
@@ -87,7 +88,8 @@ def test_metadata_uses_configuration_not_literal(client, manager, app, factory):
 def test_create_edit_pk_immutable_and_audit(client, manager, factory):
     response = client.post(ROLES, json={"nro": "MiRol", "descripcion": " Descripción "})
     assert response.status_code == 201
-    assert response.json() == {"nro": "MiRol", "descripcion": "Descripción", "esRolCliente": False}
+    assert response.json() == {"nro": "MiRol", "descripcion": "Descripción", "esRolCliente": False,
+                               "estado": "activo"}
     assert client.get(ROLES + "/mirol").status_code == 404
     assert client.post(ROLES, json={"nro": "MiRol", "descripcion": "Otro"}).status_code == 409
     assert client.post(ROLES, json={"nro": "OtroRol", "descripcion": "Descripción"}).status_code == 201
@@ -506,3 +508,55 @@ def test_permissions_delete_failure_restores_removed_assignment(client, manager,
     assert put(client, "laboral", []).status_code == 500
     assert client.get(ROLES + "/laboral/permisos").json()["permisos"] == ["CU05", "CU06"]
     assert audit(factory) == before
+
+
+def test_role_deactivation_and_reactivation_audit(client, manager, factory):
+    """CU06 baja lógica: el rol deja de autorizar y vuelve a hacerlo al activarlo."""
+    assert client.post(ROLES, json={"nro": "temporal", "descripcion": "Temporal"}).status_code == 201
+    before = audit(factory)
+    off = client.patch(ROLES + "/temporal/estado-cuenta", json={"activo": False})
+    assert off.status_code == 200 and off.json()["estado"] == "inactivo"
+    on = client.patch(ROLES + "/temporal/estado-cuenta", json={"activo": True})
+    assert on.status_code == 200 and on.json()["estado"] == "activo"
+    assert audit(factory)[len(before):] == [
+        ("rol_desactivado", manager, {"resultado": "exito", "rol": "temporal"}),
+        ("rol_activado", manager, {"resultado": "exito", "rol": "temporal"}),
+    ]
+
+
+def test_public_role_and_assigned_roles_cannot_be_deactivated(client, manager, factory, payload):
+    # El rol público de clientes nunca se desactiva.
+    protected = client.patch(ROLES + "/cliente/estado-cuenta", json={"activo": False})
+    assert protected.status_code == 409 and protected.json()["error"]["code"] == "rol_cliente_protegido"
+    assert client.get(ROLES + "/cliente").json()["estado"] == "activo"
+    # Un rol con usuarios asignados exige reasignarlos antes de desactivarlo.
+    employee(client, payload, role="laboral")
+    blocked = client.patch(ROLES + "/laboral/estado-cuenta", json={"activo": False})
+    assert blocked.status_code == 409 and blocked.json()["error"]["code"] == "rol_con_usuarios"
+    assert client.get(ROLES + "/laboral").json()["estado"] == "activo"
+    # Un rol inactivo tampoco recibe permisos nuevos.
+    with factory.begin() as db:
+        db.get(Rol, "laboral").estado = "inactivo"
+    assert put(client, "laboral", ["CU05"]).status_code == 409
+    assert client.get(ROLES + "/laboral/permisos").json()["permisos"] == []
+
+
+def test_inactive_role_never_authorizes(client, manager, factory, payload):
+    """CU06: los usuarios de un rol inactivo no obtienen permisos por ese rol."""
+    assert put(client, "laboral", ["CU05"]).status_code == 200
+    employee(client, payload, role="laboral", email="inactivo@example.com")
+    login = {"correo": "inactivo@example.com", "contrasena": payload["contrasena"]}
+    with closing(TestClient(client.app)) as inactive:
+        inactive.headers.update({"Origin": "http://localhost:4200", "X-CSRF-Protection": "1"})
+        assert inactive.post("/api/auth/login", json=login).status_code == 200
+        assert inactive.get("/api/admin/usuarios").status_code == 200
+        with factory.begin() as db:
+            db.get(Rol, "laboral").estado = "inactivo"
+        assert inactive.get("/api/admin/usuarios").status_code == 401
+        inactive.cookies.clear()
+        assert inactive.post("/api/auth/login", json=login).status_code == 401
+        with factory() as db:
+            assert locks.has_permission(db, "laboral", "CU05") is False
+        with factory.begin() as db:
+            db.get(Rol, "laboral").estado = "activo"
+        assert inactive.post("/api/auth/login", json=login).status_code == 200

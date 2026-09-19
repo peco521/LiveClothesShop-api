@@ -4,6 +4,7 @@ from sqlalchemy import func, select
 from app.core.database import is_postgresql
 from app.core.errors import DomainError
 from app.modules.inventario_productos.cu23_gestionar_devoluciones.models.devoluciones import PoliticaDevolucion, Devolucion, DetalleDev, Reembolso
+from app.modules.inventario_productos.cu23_gestionar_devoluciones.repositories import devoluciones as repo
 from app.modules.inventario_productos.shared.operaciones_access import branch
 from app.modules.inventario_productos.shared.access import transaction
 from app.modules.cliente_experiencia_compra.shared.models.comercio import Venta, Pago, DetalleVenta, MovimientoInv
@@ -106,11 +107,24 @@ def create(db, data, actor, scope_id, peer):
                 raise DomainError(409, 'historico_no_desglosado', 'Esta venta antigua requiere revisión del descuento por prenda antes de reembolsar')
             net = line.preciounitario - (line.descuentounitario or Decimal('0'))
             amount += moneda(net * item.cantidad * policy.porcentaje / 100)
-        request = Devolucion(nroventa=row.nroventa, monto=amount, estado='pendiente', motivo=data.motivo)
-        db.add(request); db.flush()
-        for i, item in enumerate(data.items, 1):
-            db.add(DetalleDev(nrodev=request.nrodev, iddetalledev=i, nroventa=row.nroventa, iddetalleventa=item.idDetalleVenta, cantidad=item.cantidad))
-        db.flush(); record(db, 'devolucion_registrada', actor, peer, True)
+        if is_postgresql(db):
+            # La PA oficial registra devolución y detalle en una sola llamada; el
+            # monto se calcula arriba en el backend y el motivo se completa aquí
+            # (la firma de la PA no lo recibe).
+            nro_dev = repo.registrar_con_procedimiento(
+                db, nro_venta=row.nroventa, monto=amount,
+                id_detalle_ventas=[i.idDetalleVenta for i in data.items],
+                cantidades=[i.cantidad for i in data.items])
+            request = db.get(Devolucion, nro_dev)
+            request.motivo = data.motivo
+            db.flush()
+        else:
+            request = Devolucion(nroventa=row.nroventa, monto=amount, estado='pendiente', motivo=data.motivo)
+            db.add(request); db.flush()
+            for i, item in enumerate(data.items, 1):
+                db.add(DetalleDev(nrodev=request.nrodev, iddetalledev=i, nroventa=row.nroventa, iddetalleventa=item.idDetalleVenta, cantidad=item.cantidad))
+            db.flush()
+        record(db, 'devolucion_registrada', actor, peer, True)
         return view(db, request)
 
 
@@ -144,7 +158,12 @@ def decide(db, nro, data, actor, scope_id, peer):
                 # en PostgreSQL; aquí solo se asegura que exista la fila de inventario.
                 db.add(Inventario(idvar=line.idvar, nrosuc=sold.nrosuc, stock=0, cantdisp=0))
                 db.flush()
-            if not is_postgresql(db):
+            if is_postgresql(db):
+                # La PA marca 'aprobada'; el trigger repone el stock una sola vez.
+                repo.aprobar_con_procedimiento(db, nro)
+                db.expire(row)
+                row = db.get(Devolucion, nro)
+            else:
                 # En SQLite (pruebas) no hay triggers: se repone y se registra el
                 # movimiento aquí, replicando exactamente lo que haría el trigger.
                 for detail in sorted(details, key=lambda d: d.iddetalleventa):
@@ -152,7 +171,7 @@ def decide(db, nro, data, actor, scope_id, peer):
                     inventory = comercio.locked_inventarios(db, line.idvar, sold.nrosuc)[0]
                     inventory.stock += detail.cantidad; inventory.cantdisp += detail.cantidad
                     db.add(MovimientoInv(nroinv=inventory.nroinv, tipomov='entrada', cantidad=detail.cantidad, fecha=datetime.now().date(), motivo=f'devolucion aprobada nro {nro}'))
-            row.estado = 'aprobada'
+                row.estado = 'aprobada'
             db.add(Reembolso(nrodev=nro, idpago=payment.idpago, metodo=payment.metodo, monto=row.monto, estado='pendiente'))
         db.flush(); record(db, 'devolucion_' + data.accion, actor, peer, True)
         return view(db, row)

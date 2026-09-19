@@ -11,6 +11,11 @@ Text100 = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, 
 BranchId = Annotated[int, Field(strict=True, ge=-2147483648, le=2147483647)]
 
 
+class EstadoCuenta(PublicInput):
+    # CU05/CU06/CU07: baja lógica y reactivación (no hay borrado físico).
+    activo: bool
+
+
 class EmpleadoCrear(Registro):
     nroRol: RoleId
     cargo: Text50
@@ -73,6 +78,8 @@ class UsuarioDetalle(BaseModel):
     rol: RolResponse
     empleado: EmpleadoPerfil | None
     admin: AdminPerfil | None
+    # CU05: None para administradores (no tienen perfil de empleado que dar de baja).
+    estado: Literal["activo", "inactivo"] | None = None
 
 
 class UsuariosListado(BaseModel):

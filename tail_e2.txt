@@ -1,0 +1,6 @@
+﻿[41m[1m FAIL [22m[49m [30m[42m LiveClothesShop-web 
+[41m[1m FAIL [22m[49m [30m[42m LiveClothesShop-web 
+to make sure your tests are not affected.[22m[39m
+[2m Test Files [22m [1m[31m6 failed[39m[22m[2m | [22m[1m[32m37 passed[39m[22m[90m (43)[39m
+[2m      Tests [22m [1m[31m29 failed[39m[22m[2m | [22m[1m[32m627 passed[39m[22m[90m (656)[39m
+[2m   Duration [22m 96.53s[2m (transform 259.59s, setup 31.63s, import 320.07s, tests 115.35s, environment 2054.84s)[22m

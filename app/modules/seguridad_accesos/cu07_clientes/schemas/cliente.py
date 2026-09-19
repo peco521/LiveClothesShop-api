@@ -3,10 +3,19 @@ from typing import Annotated, Literal
 
 from pydantic import AliasChoices, BaseModel, EmailStr, Field, StringConstraints, field_validator, model_validator
 
-from app.modules.seguridad_accesos.schemas.auth import PublicInput, RolResponse, normalize_email
+from app.modules.seguridad_accesos.schemas.auth import PublicInput, Registro, RolResponse, normalize_email
 
 Text100 = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 Text50 = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
+
+
+class ClienteCrear(Registro):
+    """CU07 alta administrativa: mismos datos que el registro público."""
+
+
+class EstadoCuenta(PublicInput):
+    # CU07: baja lógica (inactivo) y reactivación; nunca borra el historial.
+    activo: bool
 
 
 class ClienteEditar(PublicInput):

@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     cloudinary_api_key: SecretStr = SecretStr("")
     cloudinary_api_secret: SecretStr = SecretStr("")
     payments_frontend_url: str = "http://localhost:4200"
+    # CU09: validación de direcciones contra OpenStreetMap/Nominatim (sin claves).
+    # "disabled" (defecto) no valida y deja latitud/longitud en NULL.
+    geocoding_provider: Literal["disabled", "nominatim"] = "disabled"
+    geocoding_base_url: str = "https://nominatim.openstreetmap.org"
+    geocoding_timeout: float = Field(default=5, gt=0, le=30)
+    geocoding_user_agent: str = Field(default="LiveClothesShop/1.0 (proyecto academico)", max_length=150)
     allowed_origins: list[str] = Field(default_factory=lambda: [
         "http://localhost:4200", "http://localhost:4300",
     ])
@@ -76,4 +82,12 @@ class Settings(BaseSettings):
                 raise ValueError("GMAIL_SENDER debe ser un correo válido sin saltos de línea")
         if self.payments_provider == "stripe" and self.payments_frontend_url not in self.allowed_origins:
             raise ValueError("PAYMENTS_FRONTEND_URL debe estar incluido en ALLOWED_ORIGINS")
+        if self.geocoding_provider == "nominatim":
+            # Nominatim exige User-Agent identificable y una URL base limpia.
+            parsed = urlsplit(self.geocoding_base_url)
+            if (parsed.scheme not in {"http", "https"} or not parsed.netloc
+                    or parsed.query or parsed.fragment or parsed.username or parsed.password):
+                raise ValueError("GEOCODING_BASE_URL debe ser una URL base http(s) sin credenciales ni parámetros")
+            if not self.geocoding_user_agent.strip():
+                raise ValueError("GEOCODING_USER_AGENT es obligatorio para usar Nominatim")
         return self

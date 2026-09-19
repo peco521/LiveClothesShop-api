@@ -1,9 +1,11 @@
 """CU05 HTTP/domain regression tests. Only the injected SQLite test database."""
 import json
+from contextlib import closing
 from datetime import timedelta
 
 import pytest
 from fastapi import Depends
+from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
@@ -102,10 +104,13 @@ def test_list_internal_and_pagination(client, operator, employee):
     assert client.get(USERS + "?q=%").json()["total"] == 0
 
 
-def test_excludes_clients_everywhere(client, operator, employee, registration):
+def test_excludes_clients_everywhere(client, operator, employee, registration, credentials):
     response = client.post("/api/auth/registro", json=registration | {"correo": "cliente@example.com"})
     assert response.status_code == 201
     client_id = response.json()["idUsuario"]
+    # CU01: el registro público deja iniciada la sesión del cliente nuevo; esta
+    # prueba necesita la sesión administrativa del operador, así que se rehace.
+    assert client.post("/api/auth/login", json=credentials).status_code == 200
     assert client.get(USERS).json()["total"] == 2
     assert client.get(USERS + "/" + client_id).status_code == 404
     assert client.patch(USERS + "/" + client_id + "/estado", json={"activo": False}).status_code == 404
@@ -358,3 +363,50 @@ def test_no_admin_creation_or_physical_delete_routes(app):
     for path, operations in paths.items():
         if path.startswith("/api/admin/"):
             assert "delete" not in operations
+
+
+def test_employee_state_deactivation_and_reactivation(client, operator, employee, factory):
+    """CU05 baja lógica: sin borrado físico, con auditoría de cada transición."""
+    path = EMPLOYEES + "/" + employee["idUsuario"] + "/estado-cuenta"
+    assert employee["estado"] == "activo"
+    before = audit(factory)
+    off = client.patch(path, json={"activo": False})
+    assert off.status_code == 200 and off.json()["estado"] == "inactivo"
+    assert client.get(USERS + "/" + employee["idUsuario"]).status_code == 200
+    with factory() as db:
+        assert db.get(Empleado, employee["idUsuario"]) is not None
+        assert count(db, Empleado) == 1 and count(db, Usuario) == 2
+    assert audit(factory)[len(before):] == [("usuario_desactivado", operator, {"resultado": "exito"})]
+    on = client.patch(path, json={"activo": True})
+    assert on.status_code == 200 and on.json()["estado"] == "activo"
+    assert audit(factory)[len(before) + 1:] == [("usuario_activado", operator, {"resultado": "exito"})]
+
+
+def test_inactive_employee_cannot_login_or_operate(client, app, operator, employee, factory, payload):
+    """CU05: la baja lógica corta el acceso, incluso una sesión ya abierta."""
+    login = {"correo": payload["correo"], "contrasena": payload["contrasena"]}
+    with closing(TestClient(app)) as other:
+        other.headers.update({"Origin": "http://localhost:4200", "X-CSRF-Protection": "1"})
+        assert other.post("/api/auth/login", json=login).status_code == 200
+        assert other.get("/api/auth/me").status_code == 200
+        assert client.patch(EMPLOYEES + "/" + employee["idUsuario"] + "/estado-cuenta",
+                            json={"activo": False}).status_code == 200
+        assert other.get("/api/auth/me").status_code == 401
+        other.cookies.clear()
+        assert other.post("/api/auth/login", json=login).status_code == 401
+    with factory() as db:
+        assert db.get(Empleado, employee["idUsuario"]) is not None
+
+
+def test_last_cu06_employee_cannot_be_deactivated(client, factory, operator, payload):
+    """CU06 continuidad: un empleado inactivo no cuenta como usuario operativo."""
+    first = client.post(EMPLOYEES, json=payload | {"nroRol": "roles", "correo": "uno@example.com"})
+    second = client.post(EMPLOYEES, json=payload | {"nroRol": "roles", "correo": "dos@example.com"})
+    assert first.status_code == 201 and second.status_code == 201
+    path = EMPLOYEES + "/{}/estado-cuenta"
+    assert client.patch(path.format(first.json()["idUsuario"]), json={"activo": False}).status_code == 200
+    refused = client.patch(path.format(second.json()["idUsuario"]), json={"activo": False})
+    assert refused.status_code == 409 and refused.json()["error"]["code"] == "ultimo_usuario_cu06"
+    with factory() as db:
+        assert db.get(Empleado, first.json()["idUsuario"]).estado == "inactivo"
+        assert db.get(Empleado, second.json()["idUsuario"]).estado == "activo"

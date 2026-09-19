@@ -26,8 +26,13 @@ def reset_password(data: RestablecerContrasena, request: Request, db: Session = 
 
 
 @router.post("/registro", response_model=RegistroResponse, status_code=201)
-def register(data: Registro, request: Request, db: Session = Depends(get_db)):
-    return auth.register(db, data, request.app.state.settings, request.app.state.passwords, peer(request))
+def register(data: Registro, request: Request, response: Response, db: Session = Depends(get_db)):
+    # Registro público: crea la cuenta y deja la sesión iniciada (misma cookie que el login).
+    result, credential = auth.register(db, data, request.app.state.settings,
+                                       request.app.state.passwords, peer(request),
+                                       request.app.state.access_tokens)
+    _session_cookie(response, request.app.state.settings, credential)
+    return result
 
 
 @router.post("/login", response_model=AuthResponse)
@@ -47,13 +52,18 @@ def admin_login(data: Login, request: Request, response: Response, db: Session =
     return _login(data, request, response, db, allowed_types={"A", "E"})
 
 
+def _session_cookie(response: Response, settings, credential: str) -> None:
+    # Misma sesión para login y registro: cookie HttpOnly, path /api y duración de sesión.
+    response.set_cookie(settings.cookie_name, credential, httponly=True,
+                        secure=settings.cookie_secure, samesite=settings.cookie_samesite,
+                        path="/api", max_age=settings.session_hours * 3600)
+
+
 def _login(data, request, response, db, allowed_types=None):
     settings = request.app.state.settings
     result, credential = auth.login(db, data, settings, request.app.state.passwords, peer(request),
                                     request.app.state.access_tokens, allowed_types=allowed_types)
-    response.set_cookie(settings.cookie_name, credential, httponly=True,
-                        secure=settings.cookie_secure, samesite=settings.cookie_samesite,
-                        path="/api", max_age=settings.session_hours * 3600)
+    _session_cookie(response, settings, credential)
     return result
 
 
