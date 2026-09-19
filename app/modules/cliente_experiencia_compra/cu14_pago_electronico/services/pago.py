@@ -156,14 +156,19 @@ def _finalizar(db, id_pago: int, user_id: str, peer, resultado: ResultadoPasarel
 
 
 def _descontar(db, venta, user_id: str, peer):
-    cart = carrito_repo.locked_active_cart(db, user_id)
-    if cart is None or cart.idcarrito != venta.idcarrito:
+    # Reserva del cliente: al cobrar se libera lo reservado y la reserva queda
+    # atendida. Sólo aplica a ventas de caja con nroReserva (el carrito no reserva).
+    comercio_repo.entregar_reserva(db, venta)
+    presencial = venta.idcarrito is None and venta.claveoperacion is not None
+    presencial = venta.idcarrito is None and venta.claveoperacion is not None
+    cart = None if presencial else carrito_repo.locked_active_cart(db, user_id)
+    if not presencial and (cart is None or cart.idcarrito != venta.idcarrito):
         # El carrito ya no está activo para esta venta: conflicto, sin descuento.
         raise DomainError(409, "carrito_no_disponible",
                           "El carrito de esta venta ya no está activo")
     detalles = venta_repo.detalles(db, venta.nroventa)
-    actual = sorted((d.idvar, d.cantidad) for d in carrito_repo.cart_details(db, cart.idcarrito))
-    if actual != sorted((d.idvar, d.cantidad) for d in detalles):
+    actual = [] if presencial else sorted((d.idvar, d.cantidad) for d in carrito_repo.cart_details(db, cart.idcarrito))
+    if not presencial and actual != sorted((d.idvar, d.cantidad) for d in detalles):
         raise DomainError(409, "carrito_modificado", "El carrito cambió desde la preparación de la compra")
     for detail in sorted(detalles, key=lambda d: d.idvar):
         filas = comercio_repo.locked_inventarios(db, detail.idvar, venta.nrosuc)
@@ -188,4 +193,5 @@ def _descontar(db, venta, user_id: str, peer):
         if pendiente > 0:  # Defensa en profundidad (el chequeo previo lo impide).
             raise DomainError(409, "disponibilidad_insuficiente",
                               "No hay disponibilidad suficiente en la sucursal")
-    cart.estado = "convertido"
+    if cart is not None:
+        cart.estado = "convertido"

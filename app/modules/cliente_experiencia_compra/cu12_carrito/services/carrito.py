@@ -28,15 +28,23 @@ from app.modules.cliente_experiencia_compra.shared.repositories import comercio 
 from app.modules.cliente_experiencia_compra.shared.services.precios import promocion_vigente
 from app.modules.seguridad_accesos.services.bitacora import record
 from app.modules.cliente_experiencia_compra.cu13_compra_digital.repositories import venta as venta_repo
+from app.modules.cliente_experiencia_compra.cu14_pago_electronico.repositories import pago as pago_repo
 
 
-def _permitir_edicion(db, user_id):
+def _permitir_edicion(db, user_id, peer):
     # Same outer lock in checkout, payment and cart edits prevents lock inversion.
     if repository.locked_cliente(db, user_id) is None:
         raise DomainError(403, "acceso_denegado", "No tiene autorización para esta operación")
     cart = repository.locked_active_cart(db, user_id)
-    if cart and venta_repo.registrada_por_carrito(db, cart.idcarrito):
-        raise DomainError(409, "compra_pendiente", "Cancela la compra pendiente antes de editar el carrito")
+    venta = venta_repo.locked_registrada_por_carrito(db, cart.idcarrito) if cart else None
+    if venta:
+        # El resumen sin pago es reemplazable; el carrito permanece activo.
+        # Nunca alterar un importe que una pasarela pueda estar cobrando.
+        if any(pago.estado in {"pendiente", "aprobado"}
+               for pago in pago_repo.pagos_de_venta(db, venta.nroventa)):
+            raise DomainError(409, "pago_en_curso", "Consulta o cancela el pago en curso antes de editar el carrito")
+        venta.estado = "anulada"
+        record(db, "venta_anulada_por_edicion_carrito", user_id, peer, True)
 
 
 @contextmanager
@@ -133,7 +141,7 @@ def _activo_o_crear(db, user_id: str):
 
 def agregar(db, data: ItemAgregar, user_id: str, peer):
     with transaction(db):
-        _permitir_edicion(db, user_id)
+        _permitir_edicion(db, user_id, peer)
         variant, _ = _variante_activa(db, data.idVar)
         if is_postgresql(db):
             cart_previo = repository.active_cart(db, user_id)
@@ -175,7 +183,7 @@ def agregar(db, data: ItemAgregar, user_id: str, peer):
 
 def modificar(db, idDetalle: int, data: ItemCantidad, user_id: str, peer):
     with transaction(db):
-        _permitir_edicion(db, user_id)
+        _permitir_edicion(db, user_id, peer)
         cart = repository.locked_active_cart(db, user_id)
         if cart is None:
             raise DomainError(404, "item_no_encontrado", "Producto no encontrado en el carrito")
@@ -193,7 +201,7 @@ def modificar(db, idDetalle: int, data: ItemCantidad, user_id: str, peer):
 
 def eliminar(db, idDetalle: int, user_id: str, peer):
     with transaction(db):
-        _permitir_edicion(db, user_id)
+        _permitir_edicion(db, user_id, peer)
         cart = repository.locked_active_cart(db, user_id)
         if cart is None:
             raise DomainError(404, "item_no_encontrado", "Producto no encontrado en el carrito")

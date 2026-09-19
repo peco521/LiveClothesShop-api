@@ -79,6 +79,16 @@ class StripeCheckout:
                      if item.get("status") == "succeeded")
         return amount >= session["amount_total"]
 
+    def refund_partial(self, session, amount, id_refund):
+        intent = session.get('payment_intent')
+        if not isinstance(intent, str) or not intent.startswith('pi_'):
+            raise ValueError('Pago Stripe sin referencia verificable')
+        cents = amount * 100
+        if cents <= 0 or cents != cents.to_integral_value():
+            raise ValueError('Monto inválido para reembolso')
+        return self.request('refunds', {'payment_intent': intent, 'amount': int(cents)},
+                            key=f'lcs-return-refund-{id_refund}')
+
     def verify_event(self, payload, signature):
         if len(payload) > 1_000_000:
             raise ValueError("Evento inválido")

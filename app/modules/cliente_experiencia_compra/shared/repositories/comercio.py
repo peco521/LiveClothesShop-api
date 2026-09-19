@@ -1,9 +1,14 @@
-"""Reservas e inventario compartidos (CU11; reutilizable por CU13/CU15)."""
+"""Reservas e inventario compartidos (CU11; reutilizable por CU13/CU14/CU15/CU24)."""
 
 from sqlalchemy import func, select
 
 from app.modules.cliente_experiencia_compra.shared.models.catalogo import Inventario
-from app.modules.cliente_experiencia_compra.shared.models.comercio import HorarioAtencion, HorarioSuc
+from app.modules.cliente_experiencia_compra.shared.models.comercio import (
+    DetalleReserva,
+    HorarioAtencion,
+    HorarioSuc,
+    Reserva,
+)
 from app.modules.seguridad_accesos.shared.models import Sucursal
 
 
@@ -43,3 +48,37 @@ def locked_inventarios(db, idVar: str, nroSuc: int):
              .with_for_update()
              .execution_options(populate_existing=True))
     return list(db.scalars(query).all())
+
+
+def entregar_reserva(db, venta):
+    """Entrega la reserva vinculada a una venta de caja al confirmarse su cobro (CU22 + CU24).
+
+    Devuelve al disponible lo que la reserva retenía y actualiza el estado a
+    ``atendida``: la reserva sólo se atiende cuando el cliente pagó. Es
+    idempotente (si ya no está ``confirmada`` no hace nada) y debe ejecutarse
+    ANTES del descuento de la venta, para que el disponible liberado cubra la
+    salida y no queden unidades retenidas por una reserva ya entregada.
+    """
+    if venta.nroreserva is None:
+        return
+    reserva = db.scalar(select(Reserva)
+                        .where(Reserva.nroreserva == venta.nroreserva)
+                        .with_for_update()
+                        .execution_options(populate_existing=True))
+    if reserva is None or reserva.estado != "confirmada":
+        return
+    detalles = db.scalars(select(DetalleReserva)
+                          .where(DetalleReserva.nroreserva == reserva.nroreserva)
+                          .order_by(DetalleReserva.iddetalleres)).all()
+    for detalle in detalles:
+        left = detalle.cantidad
+        for inventory in locked_inventarios(db, detalle.idvar, reserva.nrosuc):
+            amount = min(left, inventory.stock - inventory.cantdisp)
+            if amount <= 0:
+                continue
+            inventory.cantdisp += amount
+            left -= amount
+            if left == 0:
+                break
+    reserva.estado = "atendida"
+    db.flush()

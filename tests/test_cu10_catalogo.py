@@ -115,6 +115,7 @@ def test_category_brands_exclude_unrelated_and_inactive(client, customer, factor
 
 
 def test_routes_require_authentication(client, catalog):
+    assert client.get('/api/catalogo/variantes/var-001').status_code == 401
     assert client.get(BASE).status_code == 401
     assert client.get(BASE + "/prod-001").status_code == 401
     assert client.get("/api/catalogo/categorias").status_code == 401
@@ -128,6 +129,7 @@ def test_non_cliente_rejected(client, registered, credentials, catalog, factory)
     assert client.post("/api/auth/login", json=credentials).status_code == 200
     assert client.get(BASE).status_code == 403
     assert client.get(BASE + "/prod-001").status_code == 403
+    assert client.get('/api/catalogo/variantes/var-001').status_code == 403
 
 
 def test_bearer_transport_for_mobile(client, customer, settings):
@@ -148,6 +150,19 @@ def test_list_pagination_and_search(client, customer):
     assert client.get(BASE, params={"q": "ANDES"}).json()["total"] == 2
     assert client.get(BASE, params={"q": "inexistente-zzz"}).json() == {
         "items": [], "total": 0, "offset": 0, "limit": 20}
+
+
+def test_variant_product_preview(client, customer, factory):
+    before = inventory_snapshot(factory)
+    response = client.get('/api/catalogo/variantes/var-001')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['idProd'] == 'prod-001'
+    assert body['categoria']['descripcion'] == 'Camisas'
+    assert {v['idVariante'] for v in body['variantes']} == {'var-001', 'var-002'}
+    assert client.get('/api/catalogo/variantes/var-off').status_code == 404
+    assert client.get('/api/catalogo/variantes/missing').status_code == 404
+    assert inventory_snapshot(factory) == before
 
 
 def test_filters(client, customer):

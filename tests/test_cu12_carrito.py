@@ -199,6 +199,14 @@ def test_patch_cantidad_absoluta(client, customer):
     updated = client.patch(f"{BASE}/items/{detail_id}", json={"cantidad": 3}).json()
     assert updated["items"][0]["cantidad"] == 3
     assert updated["cantidadItems"] == 3
+    # Hay dos variantes registradas, pero cuatro unidades disponibles de v1.
+    # La cantidad se limita por inventario, no por el número de variantes.
+    maximum = client.patch(f"{BASE}/items/{detail_id}", json={"cantidad": 4})
+    assert maximum.status_code == 200
+    assert maximum.json()["items"][0]["cantidad"] == 4
+    reduced = client.patch(f"{BASE}/items/{detail_id}", json={"cantidad": 2})
+    assert reduced.status_code == 200
+    assert client.get(BASE).json()["items"][0]["cantidad"] == 2
 
 
 def test_patch_valida_disponibilidad(client, customer):
@@ -206,6 +214,40 @@ def test_patch_valida_disponibilidad(client, customer):
     detail_id = created["items"][0]["idDetalleCarro"]
     assert client.patch(f"{BASE}/items/{detail_id}", json={"cantidad": 5}).status_code == 409
     assert client.get(BASE).json()["items"][0]["cantidad"] == 1
+
+
+def test_editar_resumen_sin_pago_no_cancela_carrito(client, customer, factory):
+    created = client.post(BASE + "/items", json={"idVar": "v1", "cantidad": 2}).json()
+    venta = client.post("/api/cliente/compras/desde-carrito", json={"nroSuc": 1}).json()
+    detail_id = created["items"][0]["idDetalleCarro"]
+    invalid = client.patch(f"{BASE}/items/{detail_id}", json={"cantidad": 5})
+    assert invalid.status_code == 409
+    assert client.get(f"/api/cliente/compras/{venta['nroVenta']}").json()["estado"] == "registrada"
+    response = client.patch(f"{BASE}/items/{detail_id}", json={"cantidad": 3})
+    assert response.status_code == 200
+    assert response.json()["idCarrito"] == created["idCarrito"]
+    assert response.json()["items"][0]["cantidad"] == 3
+    assert client.get("/api/cliente/compras/pendiente").json() is None
+    assert client.get(f"/api/cliente/compras/{venta['nroVenta']}").json()["estado"] == "anulada"
+    replacement = client.post("/api/cliente/compras/desde-carrito", json={"nroSuc": 1}).json()
+    assert replacement["nroVenta"] != venta["nroVenta"]
+    assert replacement["items"][0]["cantidad"] == 3
+    assert replacement["total"] in (270, "270.00")
+    assert inventario(factory)[0][1:] == (10, 4)
+
+
+def test_editar_carrito_con_pago_en_curso_se_rechaza(client, customer):
+    created = client.post(BASE + "/items", json={"idVar": "v1", "cantidad": 2}).json()
+    venta = client.post("/api/cliente/compras/desde-carrito", json={"nroSuc": 1}).json()
+    response = client.post("/api/cliente/pagos", json={"nroVenta": venta["nroVenta"], "metodo": "tarjeta", "escenario": "timeout"})
+    assert response.status_code == 201
+    assert response.json()["estado"] == "pendiente"
+    detail_id = created["items"][0]["idDetalleCarro"]
+    for response in (client.patch(f"{BASE}/items/{detail_id}", json={"cantidad": 1}),
+                     client.delete(f"{BASE}/items/{detail_id}")):
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "pago_en_curso"
+    assert client.get(BASE).json()["items"][0]["cantidad"] == 2
 
 
 def test_patch_cantidad_invalida(client, customer):

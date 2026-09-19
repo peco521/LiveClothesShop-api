@@ -89,6 +89,7 @@ class Venta(Base):
     nrosuc: Mapped[int] = mapped_column(ForeignKey("sucursal.nro", onupdate="CASCADE", ondelete="CASCADE"))
     idcarrito: Mapped[int | None] = mapped_column(ForeignKey("carrito.idcarrito", onupdate="CASCADE", ondelete="CASCADE"))
     nroreserva: Mapped[int | None] = mapped_column(ForeignKey("reserva.nroreserva", onupdate="CASCADE", ondelete="CASCADE"))
+    claveoperacion: Mapped[str | None] = mapped_column(String(36), unique=True)
 
 
 class DetalleVenta(Base):
@@ -102,6 +103,7 @@ class DetalleVenta(Base):
                                           primary_key=True)
     iddetalleventa: Mapped[int] = mapped_column(Integer, primary_key=True)
     preciounitario: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    descuentounitario: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     cantidad: Mapped[int] = mapped_column(Integer)
     idvar: Mapped[str] = mapped_column(ForeignKey("varianteprod.idvariante", onupdate="CASCADE", ondelete="CASCADE"))
 

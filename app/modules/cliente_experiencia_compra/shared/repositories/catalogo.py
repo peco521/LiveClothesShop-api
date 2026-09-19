@@ -205,3 +205,6 @@ def promociones(db, ids):
         return {}
     rows = db.scalars(select(Promocion).where(Promocion.idpromo.in_(ids))).all()
     return {row.idpromo: row for row in rows}
+def get_variant(db, id_var: str):
+    return db.scalar(select(VarianteProd).where(
+        VarianteProd.idvariante == id_var, VarianteProd.estado == "activo"))

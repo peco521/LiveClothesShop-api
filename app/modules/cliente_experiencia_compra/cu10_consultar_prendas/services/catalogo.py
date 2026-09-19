@@ -65,6 +65,13 @@ def list_products(db, filters: CatalogoFiltros):
     return ProductosListado(items=items, total=total, offset=filters.offset, limit=filters.limit)
 
 
+def variant_product_detail(db, idVar: str):
+    variant = repository.get_variant(db, idVar.strip())
+    if variant is None:
+        raise DomainError(404, "variante_no_encontrada", "La prenda seleccionada ya no está disponible")
+    return product_detail(db, variant.idprod)
+
+
 def product_detail(db, idProd: str):
     found = repository.get_product(db, idProd.strip())
     if found is None:

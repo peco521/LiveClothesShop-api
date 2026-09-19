@@ -29,6 +29,10 @@ class ReservaItemDetalle(BaseModel):
     sku: str
     producto: str
     cantidad: int
+    imagen: str | None = None
+    talla: str | None = None
+    categoria: str | None = None
+    colores: list[str] = Field(default_factory=list)
 
 
 class ReservaSucursal(BaseModel):

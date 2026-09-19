@@ -44,6 +44,11 @@ def product_detail(idProd: str, db: Session = Depends(get_db)):
     return catalogo.product_detail(db, idProd)
 
 
+@router.get("/variantes/{idVar}", response_model=ProductoDetalle)
+def variant_product_detail(idVar: str, db: Session = Depends(get_db)):
+    return catalogo.variant_product_detail(db, idVar)
+
+
 _FACETAS = ("categorias", "marcas", "colecciones", "temporadas", "tallas", "colores")
 
 

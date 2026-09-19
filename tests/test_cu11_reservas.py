@@ -141,6 +141,11 @@ def test_crear_reserva_valida(client, customer, factory):
     assert data["totalUnidades"] == 3 and data["vencida"] is False
     assert [(i["idVar"], i["cantidad"]) for i in data["items"]] == [("v1", 2), ("v2", 1)]
     assert data["items"][0]["sku"] == "SKU-1" and data["items"][0]["producto"] == "Camisa"
+    assert data["items"][0]["talla"] == "M"
+    assert data["items"][0]["categoria"] == "Camisas"
+    assert data["items"][0]["colores"] == ["Rojo"]
+    assert data["items"][0]["imagen"] is None
+    assert data["items"][1]["talla"] == "L"
     # cantDisp disminuye exacto; stock físico intacto.
     assert inventario(factory, 1) == (before[0][0], before[0][1] - 2)
     assert inventario(factory, 2) == (before[1][0], before[1][1] - 1)
@@ -153,6 +158,25 @@ def test_items_duplicados_se_fusionan(client, customer, factory):
     data = response.json()
     assert len(data["items"]) == 1 and data["items"][0]["cantidad"] == 3
     assert inventario(factory, 1) == (10, 1)
+
+
+def test_detalle_con_foto_y_datos_de_prenda_inactiva(client, customer, factory):
+    with factory.begin() as db:
+        db.get(VarianteProd, 'v1').img = 'https://res.cloudinary.com/demo/image/upload/camisa.jpg'
+    created = client.post(BASE, json=body()).json()
+    before = inventario(factory, 1)
+    with factory.begin() as db:
+        db.get(VarianteProd, 'v1').estado = 'inactivo'
+        db.get(Producto, 'p1').estado = 'inactivo'
+    response = client.get(f"{BASE}/{created['nroReserva']}")
+    assert response.status_code == 200
+    item = response.json()['items'][0]
+    assert item['producto'] == 'Camisa'
+    assert item['imagen'].endswith('/camisa.jpg')
+    assert item['categoria'] == 'Camisas'
+    assert item['talla'] == 'M'
+    assert item['colores'] == ['Rojo']
+    assert inventario(factory, 1) == before
 
 
 def test_disponibilidad_insuficiente_rollback(client, customer, factory):

@@ -1,4 +1,6 @@
 from contextlib import asynccontextmanager
+import asyncio
+import logging
 
 from fastapi import FastAPI, Request, Response
 from pydantic import ValidationError
@@ -31,6 +33,11 @@ from app.integrations.payments.protocolo import PasarelaPagos
 from app.integrations.gmail import configured_gmail_delivery
 from app.integrations.payments.stripe_checkout import StripeCheckout
 from app.modules.cliente_experiencia_compra.cu14_pago_electronico.routers.stripe import router as stripe_router
+from app.modules.inventario_productos.CU21_gestionar_promo_desc.routers.promociones import router as cu21_router
+from app.modules.inventario_productos.cu22_gestionar_reservas_sucursal.routers.reservas import router as cu22_router
+from app.modules.inventario_productos.cu23_gestionar_devoluciones.routers.devoluciones import router as cu23_router
+from app.modules.inventario_productos.cu24_registrar_venta.routers.ventas import router as cu24_router
+from app.modules.inventario_productos.cu25_reportes.routers.reportes import router as cu25_router
 
 
 def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryDelivery | None = None,
@@ -61,11 +68,29 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
         else:
             factory = session_factory
         application.state.session_factory = factory
+        async def expire_reservations():
+            from app.modules.inventario_productos.cu22_gestionar_reservas_sucursal.services.reservas import expire
+            def run():
+                with factory() as db:
+                    expire(db)
+            while True:
+                try:
+                    await asyncio.to_thread(run)
+                except Exception:
+                    logging.getLogger(__name__).warning('No se pudo ejecutar el vencimiento de reservas; se reintentará')
+                await asyncio.sleep(60)
+        expiry_task = asyncio.create_task(expire_reservations()) if config.environment != 'test' else None
         owned_delivery = configured_gmail_delivery(config) if recovery_delivery is None else None
         application.state.recovery_delivery = recovery_delivery if recovery_delivery is not None else owned_delivery
         try:
             yield
         finally:
+            if expiry_task:
+                expiry_task.cancel()
+                try:
+                    await expiry_task
+                except asyncio.CancelledError:
+                    pass
             if owned_delivery is not None:
                 owned_delivery.close()
             application.state.access_tokens.clear()
@@ -92,7 +117,7 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
         is_cliente = request.url.path == "/api/cliente" or request.url.path.startswith("/api/cliente/")
         is_cu15_admin = request.url.path == "/api/admin/historial-compras" or request.url.path.startswith("/api/admin/historial-compras/")
         is_inventario_productos = any(request.url.path == prefix or request.url.path.startswith(prefix + '/')
-                                     for prefix in ('/api/admin/catalogo', '/api/admin/proveedores', '/api/admin/inventario'))
+                                     for prefix in ('/api/admin/catalogo', '/api/admin/proveedores', '/api/admin/inventario', '/api/admin/promociones', '/api/admin/reservas-sucursal', '/api/admin/devoluciones', '/api/admin/caja', '/api/admin/reportes'))
         protected = is_auth or is_cu05 or is_cu06 or is_cu07 or is_cu08 or is_cu09 or is_catalogo or is_cliente or is_cu15_admin or is_inventario_productos
         # Nativo móvil: Authorization Bearer sin cookie no usa defensa CSRF de
         # cookie (el token no se adjunta automáticamente). Con cookie presente
@@ -157,6 +182,11 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
     application.include_router(cu18_router)
     application.include_router(cu19_router)
     application.include_router(cu20_router)
+    application.include_router(cu21_router)
+    application.include_router(cu22_router)
+    application.include_router(cu23_router)
+    application.include_router(cu24_router)
+    application.include_router(cu25_router)
     return application
 
 

@@ -126,15 +126,15 @@ def checkout(db, data: CompraCrear, user_id: str, peer):
             descuento = moneda(desc_unidad * detail.cantidad)
             bruto_total += bruto
             desc_total += descuento
-            lineas.append((detail, base))
+            lineas.append((detail, base, desc_unidad))
         venta = repository.add_venta(db, Venta(
             nit=data.nit, total=moneda(bruto_total - desc_total), desc_aplicado=moneda(desc_total),
             estado="registrada", idusuariocl=user_id, idusuarioemp=None,
             nrosuc=branch.nro, idcarrito=cart.idcarrito, nroreserva=None))
-        for position, (detail, base) in enumerate(lineas, start=1):
+        for position, (detail, base, descuento) in enumerate(lineas, start=1):
             repository.add_detalle(db, DetalleVenta(
                 nroventa=venta.nroventa, iddetalleventa=position,
-                preciounitario=base, cantidad=detail.cantidad, idvar=detail.idvar))
+                preciounitario=base, descuentounitario=descuento, cantidad=detail.cantidad, idvar=detail.idvar))
         record(db, "venta_registrada", user_id, peer, True)
         # Inventario intacto, carrito activo: el cierre lo hace CU14.
         return _vista(db, venta), True

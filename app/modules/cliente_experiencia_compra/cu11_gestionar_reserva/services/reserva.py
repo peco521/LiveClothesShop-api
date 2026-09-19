@@ -10,6 +10,7 @@ from datetime import date
 from contextlib import contextmanager
 
 from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy import select
 
 from app.core.database import is_postgresql, sqlstate
 from app.core.errors import DomainError
@@ -29,6 +30,8 @@ from app.modules.cliente_experiencia_compra.cu11_gestionar_reserva.schemas.reser
 )
 from app.modules.cliente_experiencia_compra.shared.models.comercio import DetalleReserva, Reserva
 from app.modules.cliente_experiencia_compra.shared.repositories import comercio
+from app.modules.cliente_experiencia_compra.shared.repositories import catalogo
+from app.modules.cliente_experiencia_compra.shared.models.catalogo import Categoria
 from app.modules.seguridad_accesos.services.bitacora import record
 from app.modules.seguridad_accesos.shared.repositories import organizacion
 
@@ -132,6 +135,10 @@ def _detalle(db, row: Reserva, vencida: bool):
     branch = organizacion.branch(db, row.nrosuc)
     city = organizacion.city(db, branch.idciud) if branch else None
     found = repository.variantes_productos(db, sorted({d.idvar for d in detalles}))
+    tallas = catalogo.tallas_map(db, list({v.idtalla for v, _ in found.values()}))
+    colores = catalogo.variant_colors(db, list(found))
+    categorias = {c.idcat: c.descripcion for c in db.scalars(
+        select(Categoria).where(Categoria.idcat.in_({p.idcat for _, p in found.values()})))}
     items = []
     for detail in detalles:
         pair = found.get(detail.idvar)
@@ -139,8 +146,12 @@ def _detalle(db, row: Reserva, vencida: bool):
         items.append(ReservaItemDetalle(
             idDetalleRes=detail.iddetalleres, idVar=detail.idvar,
             sku=variant.sku if variant else detail.idvar,
-            producto=product.descripcion if product else detail.idvar,
-            cantidad=detail.cantidad))
+            producto=product.descripcion if product else "Prenda no disponible",
+            cantidad=detail.cantidad,
+            imagen=variant.img if variant else None,
+            talla=tallas[variant.idtalla].descripcion if variant and variant.idtalla in tallas else None,
+            categoria=categorias.get(product.idcat) if product else None,
+            colores=[c.descripcion for c in colores.get(detail.idvar, [])]))
     return ReservaDetalle(
         nroReserva=row.nroreserva, fechaReserva=row.fechareserva,
         horaAtencion=row.horaatencion, estado=row.estado,

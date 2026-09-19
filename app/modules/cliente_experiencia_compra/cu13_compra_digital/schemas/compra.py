@@ -39,7 +39,9 @@ class VentaDetalle(BaseModel):
     estado: EstadoVenta
     nit: str | None
     sucursal: VentaSucursal
-    carrito: int
+    # Las ventas de carrito (CU13) siempre traen carrito; la venta presencial de
+    # caja (CU24) se registra sin carrito, por eso es opcional.
+    carrito: int | None
     items: list[VentaItem]
     brutoTotal: Decimal
     descAplicado: Decimal
