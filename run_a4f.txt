@@ -1,7 +1,0 @@
-﻿E   sqlite3.IntegrityError: NOT NULL constraint failed: usuario.nombre
-E   sqlalchemy.exc.IntegrityError: (sqlite3.IntegrityError) NOT NULL constraint failed: usuario.nombre
-D:\Examen-1 SI2\LiveClothesShop-api\.venv\Lib\site-packages\sqlalchemy\engine\default.py:952: sqlalchemy.exc.IntegrityError: (sqlite3.IntegrityError) NOT NULL constraint failed: usuario.nombre
-FAILED tests/test_cu05_usuarios_empleados.py::test_models_match_official_schema_without_postgresql_connection
-FAILED tests/test_cu05_usuarios_empleados.py::test_no_admin_creation_or_physical_delete_routes
-FAILED tests/test_cu07_clientes.py::test_nullable_legacy_names_and_nonunique_ci_code
-3 failed, 742 passed, 2 warnings in 168.89s (0:02:48)

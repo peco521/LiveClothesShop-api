@@ -12,13 +12,15 @@ add_references(router, a25)
 
 
 @router.get('')
-def managerial_dashboard(fechaIni: date, fechaFin: date, nroSuc: int | None = Query(None, ge=1), idCat: int | None = Query(None, ge=1), idTemp: int | None = Query(None, ge=1), db=Depends(get_db), actor=Depends(a25)):
-    return reportes.dashboard(db, fechaIni, fechaFin, nroSuc, idCat, idTemp)
+def managerial_dashboard(fechaIni: date, fechaFin: date, request: Request, nroSuc: int | None = Query(None, ge=1), idCat: int | None = Query(None, ge=1), idTemp: int | None = Query(None, ge=1), db=Depends(get_db), actor=Depends(a25)):
+    return reportes.dashboard(db, fechaIni, fechaFin, nroSuc, idCat, idTemp,
+                              request.app.state.settings.reportes_zona_horaria)
 
 
 @router.get('/exportar')
-def report_export(fechaIni: date, fechaFin: date, tipo: Literal['ventas', 'inventario', 'reservas', 'devoluciones'], formato: Literal['pdf', 'xlsx'], nroSuc: int | None = Query(None, ge=1), idCat: int | None = Query(None, ge=1), idTemp: int | None = Query(None, ge=1), db=Depends(get_db), actor=Depends(a25)):
-    rows = reportes.rows_for_report(db, tipo, fechaIni, fechaFin, nroSuc, idCat, idTemp)
-    content = reportes.pdf(rows) if formato == 'pdf' else reportes.excel(rows)
+def report_export(fechaIni: date, fechaFin: date, tipo: Literal['ventas', 'inventario', 'reservas', 'devoluciones'], formato: Literal['pdf', 'xlsx'], request: Request, nroSuc: int | None = Query(None, ge=1), idCat: int | None = Query(None, ge=1), idTemp: int | None = Query(None, ge=1), db=Depends(get_db), actor=Depends(a25)):
+    model = reportes.report_model(db, tipo, fechaIni, fechaFin, nroSuc, idCat, idTemp,
+                                  request.app.state.settings.reportes_zona_horaria)
+    content = reportes.pdf(model) if formato == 'pdf' else reportes.excel(model)
     media = 'application/pdf' if formato == 'pdf' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     return Response(content, media_type=media, headers={'Content-Disposition': f'attachment; filename="reporte-{tipo}.{formato}"'})

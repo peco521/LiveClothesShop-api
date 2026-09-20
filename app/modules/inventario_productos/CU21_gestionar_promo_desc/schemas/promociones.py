@@ -2,7 +2,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Annotated, Literal
 from pydantic import Field, StringConstraints, model_validator
-from app.modules.inventario_productos.shared.operaciones_schemas import Input, Text, Id
+from app.modules.inventario_productos.shared.operaciones_schemas import Input, ProductId, Text
 
 
 class PromotionInput(Input):
@@ -12,7 +12,7 @@ class PromotionInput(Input):
     valorDescuento: Decimal = Field(gt=0, max_digits=10, decimal_places=2)
     fechaIni: date
     fechaFin: date
-    productos: list[Id] = Field(min_length=1, max_length=500)
+    productos: list[ProductId] = Field(min_length=1, max_length=500)
 
     @model_validator(mode='after')
     def validate_values(self):

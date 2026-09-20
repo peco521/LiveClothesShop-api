@@ -1,7 +1,7 @@
 from decimal import Decimal
 from typing import Annotated, Literal
 from pydantic import Field, StringConstraints
-from app.modules.inventario_productos.shared.operaciones_schemas import Input, Text, Id
+from app.modules.inventario_productos.shared.operaciones_schemas import Input, ProductId, Text, Id
 
 
 class ReturnLine(Input):
@@ -22,7 +22,7 @@ class ReturnDecision(Input):
 
 
 class PolicyInput(Input):
-    idProd: Id
+    idProd: ProductId
     idVar: Id | None = None
     dias: int = Field(ge=1, le=3650, strict=True)
     porcentaje: Decimal = Field(gt=0, le=100, max_digits=5, decimal_places=2)

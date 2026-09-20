@@ -28,6 +28,12 @@ def register_cash_customer(data: ClienteCrear, request: Request, db=Depends(get_
                                   request.app.state.passwords, actor[0], peer(request))
 
 
+@router.get('/reservas/{nro}')
+def sale_reservation(nro: int, db=Depends(get_db), actor=Depends(a24)):
+    # CU24: la caja recupera la reserva que va a cobrar (prendas, cantidades y titular).
+    return ventas.reservation(db, nro, actor[1])
+
+
 @router.post('', status_code=201)
 def sale_create(data: SaleInput, request: Request, db=Depends(get_db), actor=Depends(a24)):
     return ventas.create(db, data, actor[0], actor[1], peer(request))
@@ -35,11 +41,16 @@ def sale_create(data: SaleInput, request: Request, db=Depends(get_db), actor=Dep
 
 @router.get('/{nro}')
 def sale_detail(nro: int, request: Request, db=Depends(get_db), actor=Depends(a24)):
-    return ventas.view(db, ventas.get(db, nro, actor[1]))
+    return ventas.view(db, ventas.get(db, nro, actor[1]), actor[0])
 
 
 @router.post('/{nro}/efectivo')
 def sale_cash(nro: int, data: CashInput, request: Request, db=Depends(get_db), actor=Depends(a24)):
+    # CU24: un pago electronico pendiente que la pasarela no cobro no impide el efectivo.
+    owner = ventas.get(db, nro, actor[1]).idusuariocl
+    db.commit()  # No remote request inside a transaction.
+    stripe = request.app.state.stripe if request.app.state.settings.payments_provider == 'stripe' else None
+    checkout_stripe.void_pending(db, nro, owner, peer(request), stripe)
     return ventas.cash(db, nro, data.recibido, actor[0], actor[1], peer(request))
 
 
@@ -57,7 +68,7 @@ def sale_reconcile(nro: int, request: Request, db=Depends(get_db), actor=Depends
     db.commit()
     if id_pago and request.app.state.stripe:
         checkout_stripe.reconcile(db, id_pago, owner, peer(request), request.app.state.stripe)
-    return ventas.view(db, ventas.get(db, nro, actor[1]))
+    return ventas.view(db, ventas.get(db, nro, actor[1]), actor[0])
 
 
 @router.post('/{nro}/cancelar')

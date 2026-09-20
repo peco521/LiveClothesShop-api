@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     cloudinary_api_key: SecretStr = SecretStr("")
     cloudinary_api_secret: SecretStr = SecretStr("")
     payments_frontend_url: str = "http://localhost:4200"
+    # CU25: `fechahora` se guarda en UTC (`func.now()`), así que el dashboard y los
+    # reportes agrupan por el día/mes de la zona horaria del negocio.
+    reportes_zona_horaria: str = "America/La_Paz"
     # CU09: validación de direcciones contra OpenStreetMap/Nominatim (sin claves).
     # "disabled" (defecto) no valida y deja latitud/longitud en NULL.
     geocoding_provider: Literal["disabled", "nominatim"] = "disabled"

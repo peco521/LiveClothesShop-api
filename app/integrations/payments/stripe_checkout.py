@@ -39,7 +39,7 @@ class StripeCheckout:
         except Exception:
             raise RuntimeError("Stripe no está disponible; consulte el estado antes de reintentar") from None
 
-    def create(self, id_pago, nro_venta, monto):
+    def create(self, id_pago, nro_venta, monto, success_url=None, cancel_url=None):
         amount = monto * 100
         if amount <= 0 or amount != amount.to_integral_value():
             raise ValueError("Monto inválido para Stripe")
@@ -50,8 +50,10 @@ class StripeCheckout:
             "line_items[0][price_data][product_data][name]": f"Compra LiveClothesShop {nro_venta}",
             "line_items[0][quantity]": 1,
             "metadata[idPago]": id_pago, "metadata[nroVenta]": nro_venta,
-            "success_url": f"{self.frontend_url}/tienda/pago/{id_pago}",
-            "cancel_url": f"{self.frontend_url}/tienda/pago/{id_pago}?cancelar=1",
+            # El llamador decide a dónde vuelve el navegador: la tienda del cliente
+            # (CU13/CU14) o el comprobante administrativo de caja (CU24).
+            "success_url": success_url or f"{self.frontend_url}/tienda/pago/{id_pago}",
+            "cancel_url": cancel_url or f"{self.frontend_url}/tienda/pago/{id_pago}?cancelar=1",
         }, key=f"lcs-checkout-{id_pago}")
 
     def retrieve(self, session):
