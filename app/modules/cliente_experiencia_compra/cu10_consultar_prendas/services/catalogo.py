@@ -21,12 +21,34 @@ from app.modules.cliente_experiencia_compra.cu10_consultar_prendas.schemas.catal
 from app.modules.cliente_experiencia_compra.shared.repositories import catalogo as repository
 
 
-def _promo_resumen(promo):
+def promocion_resumen(promo):
+    """Promoción vigente de una prenda (misma regla para listado y detalle)."""
     if not promocion_vigente(promo):
         return None
     return PromocionResumen(idPromo=promo.idpromo, nombre=promo.nombre,
                             tipoDescuento=promo.tipodescuento,
                             valorDescuento=promo.valordescuento)
+
+
+def producto_resumen(product, marca, categoria, coleccion, promo, variants, disponible: bool):
+    """Tarjeta de prenda de CU10, reutilizable (CU17 la usa para recomendar).
+
+    No define reglas nuevas: los precios y la imagen salen de las variantes
+    activas y ``disponible`` lo calcula quien llama con la disponibilidad del
+    repositorio compartido.
+    """
+    prices = [variant.precio for variant in variants]
+    return ProductoResumen(
+        idProd=product.idprod, descripcion=product.descripcion,
+        categoria=CategoriaResumen(idCat=categoria.idcat, descripcion=categoria.descripcion),
+        marca=MarcaResumen(idMarca=marca.idmarca, nombre=marca.nombre),
+        coleccion=ColeccionResumen(idCol=coleccion.idcol, descripcion=coleccion.descripcion),
+        promocion=promocion_resumen(promo),
+        precioMin=min(prices) if prices else None,
+        precioMax=max(prices) if prices else None,
+        imagen=next((variant.img for variant in variants if variant.img), None),
+        disponible=disponible,
+        totalVariantes=len(variants))
 
 
 def list_products(db, filters: CatalogoFiltros):
@@ -49,19 +71,9 @@ def list_products(db, filters: CatalogoFiltros):
     items = []
     for product, marca, categoria, coleccion, promo in rows:
         product_variants = by_product.get(product.idprod, [])
-        prices = [variant.precio for variant in product_variants]
-        first_image = next((variant.img for variant in product_variants if variant.img), None)
-        items.append(ProductoResumen(
-            idProd=product.idprod, descripcion=product.descripcion,
-            categoria=CategoriaResumen(idCat=categoria.idcat, descripcion=categoria.descripcion),
-            marca=MarcaResumen(idMarca=marca.idmarca, nombre=marca.nombre),
-            coleccion=ColeccionResumen(idCol=coleccion.idcol, descripcion=coleccion.descripcion),
-            promocion=_promo_resumen(promo),
-            precioMin=min(prices) if prices else None,
-            precioMax=max(prices) if prices else None,
-            imagen=first_image,
-            disponible=(totals.get(product.idprod, 0) > 0),
-            totalVariantes=len(product_variants)))
+        items.append(producto_resumen(product, marca, categoria, coleccion, promo,
+                                      product_variants,
+                                      disponible=(totals.get(product.idprod, 0) > 0)))
     return ProductosListado(items=items, total=total, offset=filters.offset, limit=filters.limit)
 
 
@@ -104,7 +116,7 @@ def product_detail(db, idProd: str):
         categoria=CategoriaResumen(idCat=categoria.idcat, descripcion=categoria.descripcion),
         marca=MarcaResumen(idMarca=marca.idmarca, nombre=marca.nombre),
         coleccion=ColeccionResumen(idCol=coleccion.idcol, descripcion=coleccion.descripcion),
-        promocion=_promo_resumen(promo),
+        promocion=promocion_resumen(promo),
         variantes=variant_rows, disponibilidad=availability_rows)
 
 

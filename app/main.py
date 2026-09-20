@@ -25,6 +25,7 @@ from app.modules.cliente_experiencia_compra.cu13_compra_digital.routers.compra i
 from app.modules.cliente_experiencia_compra.cu14_pago_electronico.routers.pago import router as cu14_router
 from app.modules.cliente_experiencia_compra.cu15_historial_compra.routers.historial import router as cu15_router
 from app.modules.cliente_experiencia_compra.cu15_historial_compra.routers.administracion import router as cu15_admin_router
+from app.modules.cliente_experiencia_compra.cu17_Recomendacion.routers.recomendacion import router as cu17_router
 from app.integrations.payments.mock import PasarelaMock
 from app.integrations.geocoding import configured_geocoder
 from app.modules.inventario_productos.cu18_gestionar_catalogo.routers.catalogo import router as cu18_router
@@ -182,6 +183,7 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
     application.include_router(stripe_router)
     application.include_router(cu15_router)
     application.include_router(cu15_admin_router)
+    application.include_router(cu17_router)
     application.include_router(cu18_router)
     application.include_router(cu19_router)
     application.include_router(cu20_router)
