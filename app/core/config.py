@@ -7,6 +7,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
+from app.integrations.payments.modos import (
+    MONEDAS_ADMITIDAS,
+    PREFIJO_FIRMA,
+    ModoStripe,
+    clave_corresponde,
+    modo_por_environment,
+)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -93,4 +101,33 @@ class Settings(BaseSettings):
                 raise ValueError("GEOCODING_BASE_URL debe ser una URL base http(s) sin credenciales ni parámetros")
             if not self.geocoding_user_agent.strip():
                 raise ValueError("GEOCODING_USER_AGENT es obligatorio para usar Nominatim")
+        return self
+
+    @property
+    def stripe_mode(self) -> ModoStripe:
+        """Modo Stripe derivado de ENVIRONMENT.
+
+        `development`/`test` → Stripe TEST; `production` → Stripe LIVE. Se pasa a
+        la pasarela desde aquí, así ningún módulo de cobro decide el entorno y el
+        mismo código sirve en los dos escenarios cambiando solo la configuración.
+        """
+        return modo_por_environment(self.environment)
+
+    @model_validator(mode="after")
+    def validate_payments_mode(self):
+        """Impide mezclar entornos con el modo Stripe equivocado.
+
+        Una clave LIVE en desarrollo o pruebas se rechaza: evita cobros reales por
+        un error de configuración local. Una clave de PRUEBA en producción también
+        se rechaza: evita desplegar sin cobrar. Los prefijos admitidos viven solo en
+        `app/integrations/payments/modos.py` y el modo se deriva de `ENVIRONMENT`.
+        Los mensajes nunca incluyen el valor de las claves.
+        """
+        if self.payments_provider == "stripe":
+            if not clave_corresponde(self.stripe_secret_key.get_secret_value(), self.stripe_mode):
+                raise ValueError("STRIPE_SECRET_KEY no corresponde al modo Stripe del entorno configurado")
+            if not self.stripe_webhook_secret.get_secret_value().startswith(PREFIJO_FIRMA):
+                raise ValueError("STRIPE_WEBHOOK_SECRET debe ser un secreto de firma de webhook")
+            if self.stripe_currency not in MONEDAS_ADMITIDAS:
+                raise ValueError("STRIPE_CURRENCY debe ser una moneda admitida: usd, eur o bob")
         return self

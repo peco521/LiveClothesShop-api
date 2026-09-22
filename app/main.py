@@ -61,11 +61,14 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
         application.state.stripe = None
         if config.payments_provider == "stripe":
             try:
+                # El modo (prueba/vivo) proviene de ENVIRONMENT: la misma línea de
+                # código sirve para desarrollo (Stripe TEST) y producción (LIVE).
                 application.state.stripe = StripeCheckout(
                     config.stripe_secret_key.get_secret_value(), config.stripe_webhook_secret.get_secret_value(),
-                    config.stripe_currency, config.payments_frontend_url)
+                    config.stripe_currency, config.payments_frontend_url, modo=config.stripe_mode)
             except ValueError:
-                raise RuntimeError("Configuración Stripe inválida: revise claves de prueba, moneda y webhook") from None
+                raise RuntimeError("Configuración Stripe inválida: revise el modo (prueba/vivo), las claves, "
+                                   "la moneda y el secreto de webhook") from None
         engine = None
         if session_factory is None:
             engine, factory = create_database(config.database_url.get_secret_value())

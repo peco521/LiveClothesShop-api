@@ -1,10 +1,19 @@
-"""Stripe hosted Checkout, test keys only. No PAN/CVC enters this API."""
+"""Stripe hosted Checkout en el modo que indique la configuración. No PAN/CVC enters this API."""
 import hashlib
 import hmac
 import json
 import time
 from urllib.parse import quote, urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+from app.integrations.payments.modos import (
+    MONEDAS_ADMITIDAS,
+    PREFIJO_FIRMA,
+    PREFIJOS_CLAVE,
+    clave_corresponde,
+    livemode_esperado,
+    sesion_corresponde,
+)
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -13,12 +22,23 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 class StripeCheckout:
-    def __init__(self, secret, webhook_secret, currency, frontend_url):
-        if not secret.startswith("sk_test_") or not webhook_secret.startswith("whsec_"):
-            raise ValueError("Stripe requiere claves de prueba y secreto de webhook")
+    """Adaptador de Checkout para Stripe TEST y Stripe LIVE.
+
+    El modo llega desde `Settings.stripe_mode` (development/test → "test",
+    production → "live"); aquí no se decide el entorno, solo se comprueba que la
+    clave secreta, las sesiones y los eventos correspondan al modo declarado.
+    """
+
+    def __init__(self, secret, webhook_secret, currency, frontend_url, modo="test"):
+        if modo not in PREFIJOS_CLAVE:
+            raise ValueError("Modo Stripe inválido: use test o live")
+        if not clave_corresponde(secret, modo) or not webhook_secret.startswith(PREFIJO_FIRMA):
+            raise ValueError("Stripe requiere claves y secreto de webhook del modo configurado")
         # Deliberately support only reviewed two-decimal currencies; no implicit FX.
-        if currency not in {"usd", "eur", "bob"}:
+        if currency not in MONEDAS_ADMITIDAS:
             raise ValueError("Configure una moneda admitida: usd, eur o bob")
+        self.modo = modo
+        self.livemode = livemode_esperado(modo)
         self.secret = secret
         self.webhook_secret = webhook_secret
         self.currency = currency
@@ -43,7 +63,7 @@ class StripeCheckout:
         amount = monto * 100
         if amount <= 0 or amount != amount.to_integral_value():
             raise ValueError("Monto inválido para Stripe")
-        return self.request("checkout/sessions", {
+        session = self.request("checkout/sessions", {
             "mode": "payment", "payment_method_types[0]": "card",
             "line_items[0][price_data][currency]": self.currency,
             "line_items[0][price_data][unit_amount]": int(amount),
@@ -55,9 +75,14 @@ class StripeCheckout:
             "success_url": success_url or f"{self.frontend_url}/tienda/pago/{id_pago}",
             "cancel_url": cancel_url or f"{self.frontend_url}/tienda/pago/{id_pago}?cancelar=1",
         }, key=f"lcs-checkout-{id_pago}")
+        # Defensa en profundidad: si la respuesta no pertenece al modo configurado,
+        # no se guarda como referencia de un pago local.
+        if not sesion_corresponde(session.get("id"), self.modo):
+            raise ValueError("Stripe devolvió una sesión que no corresponde al modo configurado")
+        return session
 
     def retrieve(self, session):
-        if not isinstance(session, str) or not session.startswith("cs_test_"):
+        if not sesion_corresponde(session, self.modo):
             raise ValueError("Sesión Stripe inválida")
         return self.request("checkout/sessions/" + quote(session, safe=""))
 
@@ -105,6 +130,7 @@ class StripeCheckout:
         event = json.loads(payload)
         if not isinstance(event, dict):
             raise ValueError("Evento inválido")
-        if event.get("livemode") is not False:
-            raise ValueError("Solo se admiten eventos de prueba")
+        if event.get("livemode") is not self.livemode:
+            # development/test exige livemode=false; production exige livemode=true.
+            raise ValueError("El evento no corresponde al modo Stripe configurado")
         return event

@@ -3,6 +3,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from app.core.database import is_postgresql
 from app.core.errors import DomainError
+from app.integrations.payments.modos import es_sesion_de_pasarela
 from app.modules.inventario_productos.cu23_gestionar_devoluciones.models.devoluciones import PoliticaDevolucion, Devolucion, DetalleDev, Reembolso
 from app.modules.inventario_productos.cu23_gestionar_devoluciones.repositories import devoluciones as repo
 from app.modules.inventario_productos.shared.operaciones_access import branch
@@ -194,7 +195,7 @@ def refund(db, nro, actor, scope_id, peer, stripe=None):
             reimbursement.estado = 'aprobado'
             record(db, 'reembolso_efectivo_entregado', actor, peer, True)
             return view(db, row)
-        if not stripe or not payment.referencia or not payment.referencia.startswith('cs_test_'):
+        if not stripe or not es_sesion_de_pasarela(payment.referencia):
             raise DomainError(503, 'pasarela_no_disponible', 'El reembolso electrónico necesita la pasarela original; no se confirmó entrega de dinero')
     id_refund, amount, reference, method = snapshot
     session = stripe.retrieve(reference)

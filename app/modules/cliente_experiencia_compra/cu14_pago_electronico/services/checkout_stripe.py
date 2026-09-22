@@ -4,11 +4,17 @@ No remote Stripe request runs under a DB transaction. Webhooks and explicit
 reconciliation are idempotent. No browser-supplied success authorizes stock.
 """
 from app.core.errors import DomainError
+from app.integrations.payments.modos import es_sesion_de_pasarela, livemode_esperado, modo_de_adaptador
 from app.modules.cliente_experiencia_compra.cu12_carrito.repositories import carrito as carts
 from app.modules.cliente_experiencia_compra.cu14_pago_electronico.repositories import pago as repo
 from app.modules.cliente_experiencia_compra.cu14_pago_electronico.services import pago as core
 from app.modules.cliente_experiencia_compra.shared.models.comercio import Pago
 from app.modules.seguridad_accesos.services.bitacora import record
+
+
+def _livemode_esperado(stripe) -> bool:
+    """Modo Stripe declarado por la pasarela inyectada: prueba o vivo."""
+    return livemode_esperado(modo_de_adaptador(stripe))
 
 
 def _locked(db, id_pago, user_id):
@@ -80,7 +86,7 @@ def start(db, data, user_id, peer, stripe):
             if pago.estado != "pendiente":
                 return core._vista(db, pago), False
             pago.referencia = session["id"]
-    elif reference and reference.startswith("cs_test_"):
+    elif reference and es_sesion_de_pasarela(reference):
         session = stripe.retrieve(reference)
     elif reference and reference.startswith("refund:"):
         return reconcile(db, id_pago, user_id, peer, stripe), False
@@ -110,7 +116,7 @@ def reconcile(db, id_pago, user_id, peer, stripe):
     refunding = bool(reference and reference.startswith("refund:"))
     session_id = reference[7:] if refunding else reference
     session = stripe.retrieve(session_id)
-    if (session.get("livemode") is not False or session.get("currency") != stripe.currency
+    if (session.get("livemode") is not _livemode_esperado(stripe) or session.get("currency") != stripe.currency
             or session.get("amount_total") != int(amount * 100)
             or session.get("metadata", {}).get("idPago") != str(id_pago)
             or session.get("metadata", {}).get("nroVenta") != str(nro)):
@@ -173,7 +179,7 @@ def void_pending(db, nro, user_id, peer, stripe=None):
     if snapshot is None:
         return None
     id_pago, reference = snapshot
-    if stripe is not None and reference and (reference.startswith("cs_test_")
+    if stripe is not None and reference and (es_sesion_de_pasarela(reference)
                                              or reference.startswith("refund:")):
         # Reconcilia primero: si el cliente pago, el pago queda aprobado y no se anula.
         vista = reconcile(db, id_pago, user_id, peer, stripe)
@@ -214,7 +220,7 @@ def cancel_sale(db, nro, user_id, peer, stripe=None):
                 pago, venta = _locked(db, id_pago, user_id)
                 if pago.estado == "pendiente":
                     pago.referencia = session["id"]
-        elif reference and (reference.startswith("cs_test_") or reference.startswith("refund:")):
+        elif reference and (es_sesion_de_pasarela(reference) or reference.startswith("refund:")):
             session = stripe.retrieve(reference[7:] if reference.startswith("refund:") else reference)
         else:
             raise DomainError(409, "pasarela_incompatible", "El pago pertenece a otra pasarela; no cambie de proveedor")
@@ -226,7 +232,7 @@ def cancel_sale(db, nro, user_id, peer, stripe=None):
             raise DomainError(409, "venta_no_cancelable", "El pago ya fue confirmado; consulta su estado")
         elif session["status"] != "expired":
             raise DomainError(409, "pago_pendiente", "El pago aún se está procesando")
-    elif snapshot and snapshot[2] and (snapshot[2].startswith("cs_test_")
+    elif snapshot and snapshot[2] and (es_sesion_de_pasarela(snapshot[2])
                                       or snapshot[2].startswith("stripe:") or snapshot[2].startswith("refund:")):
         raise DomainError(409, "pasarela_incompatible", "Configure Stripe para cancelar este pago con seguridad")
     with core.transaction(db):

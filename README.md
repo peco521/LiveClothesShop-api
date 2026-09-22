@@ -35,6 +35,21 @@ entorno del proceso tienen prioridad; `.env` no debe versionarse ni compartirse.
 | `COOKIE_NAME` | `liveclothes_session` | Nombre de cookie HttpOnly, ruta `/api` y sin Domain |
 | `ALLOWED_ORIGINS` | `["http://localhost:4200","http://localhost:4300"]` | Lista JSON de orígenes exactos; HTTPS en producción |
 
+### Un solo código, dos entornos
+
+`ENVIRONMENT` decide el escenario y con él los valores externos; no hay
+`localhost`, dominios ni claves escritos en la lógica:
+
+- `ENVIRONMENT=development` (o `test`) → Stripe en **modo prueba** (`sk_test_...`).
+- `ENVIRONMENT=production` → Stripe en **modo vivo** (`sk_live_...`).
+
+La combinación contraria (`development` + `sk_live_...`, `production` +
+`sk_test_...`) **aborta el arranque** antes de cualquier llamada de red, y los
+mensajes de error nunca incluyen el valor de las claves. La configuración LIVE se
+define en las variables del entorno del servidor (Render), nunca dentro del
+`.env` local ni del repositorio. Detalles y variables de pago en
+[Stripe](docs/CU13_CU14_STRIPE.md) y en la plantilla `.env.example`.
+
 Ejemplo local con datos ficticios: sustituir el valor de `DATABASE_URL` por la
 configuración privada de una base **local** ya preparada. No compartir la URL real.
 
@@ -196,8 +211,9 @@ bloqueos y concurrencia. No se ejecutan pruebas contra URLs tomadas del entorno.
   de entregar la cookie. Los formatos de hash reconocidos pero no compatibles
   requieren recuperación de contraseña. El login no asigna permisos ni roles.
 - El repositorio incluye autenticación, administración y compra hasta CU15.
-- CU13/CU14 incluyen cancelación y Stripe Checkout en modo de prueba (USD).
-  Consulte [configuración y límites Stripe](docs/CU13_CU14_STRIPE.md).
+- CU13/CU14 incluyen cancelación y Stripe Checkout (USD) con el mismo código en
+  modo prueba (desarrollo local) y modo vivo (producción); el modo se deriva de
+  `ENVIRONMENT`. Consulte [configuración y límites Stripe](docs/CU13_CU14_STRIPE.md).
 - La recuperación incluye un adaptador Gmail API configurable en `.env`;
   consulte [CU04: configuración Gmail](docs/CU04_GMAIL.md) para obtener credenciales OAuth.
   la tabla `recuperacion_contrasena` forma parte del SQL corregido y del script 04.
