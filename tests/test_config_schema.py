@@ -33,6 +33,8 @@ def test_schema_does_not_require_session_table(factory):
     {"allowed_origins": ["*"]},
     {"allowed_origins": ["https://site.example/path"]},
     {"session_hours": 0},
+    {"environment": "production", "cookie_secure": True, "multitenant_enabled": False,
+     "allowed_origins": ["https://shop.example"]},
 ])
 def test_invalid_configuration(settings, overrides):
     with pytest.raises(ValidationError):
@@ -40,8 +42,10 @@ def test_invalid_configuration(settings, overrides):
 
 
 def test_secure_cookie_and_configurable_expiry(settings, factory, registration):
+    # El modo anterior solo es accesible fuera de producción; la cookie Secure
+    # y su duración conservan el mismo contrato sobre HTTPS en desarrollo.
     settings = Settings(_env_file=None, **(settings.model_dump() | {
-        "environment": "production", "cookie_secure": True,
+        "environment": "development", "cookie_secure": True,
         "allowed_origins": ["https://shop.example"], "session_hours": 2}))
     app = create_app(settings, factory)
     with TestClient(app, base_url="https://shop.example") as client:

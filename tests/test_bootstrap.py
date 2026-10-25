@@ -310,7 +310,7 @@ def test_getpass_fallback_aborts(monkeypatch, data):
 def test_cli_success_and_repeat(monkeypatch, data, empty_factory, settings, passwords, capsys):
     engine = Mock()
     monkeypatch.setattr(cli, "Settings", lambda: settings)
-    monkeypatch.setattr(cli, "Passwords", lambda: passwords)
+    monkeypatch.setattr(cli, "Passwords", lambda storage: passwords if storage == settings.password_storage else None)
     monkeypatch.setattr(cli, "create_database", lambda _: (engine, empty_factory))
     for expected in ["SuperAdmin creado", "contraseña sin cambios"]:
         mock_prompts(monkeypatch, data)

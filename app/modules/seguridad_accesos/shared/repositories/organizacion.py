@@ -5,6 +5,8 @@ from app.modules.seguridad_accesos.shared.models import Ciudad, Sucursal
 
 def branch(db, branch_id, *, lock=True):
     query = select(Sucursal).where(Sucursal.nro == branch_id)
+    if db.info.get("multitenant") is True:
+        query = query.where(Sucursal.idemp == db.info["idemp"])
     if lock:
         query = query.with_for_update().execution_options(populate_existing=True)
     return db.scalar(query)
@@ -12,17 +14,24 @@ def branch(db, branch_id, *, lock=True):
 
 def branches(db, city_id):
     query = select(Sucursal, Ciudad).join(Ciudad, Ciudad.id == Sucursal.idciud)
+    if db.info.get("multitenant") is True:
+        query = query.where(Sucursal.idemp == db.info["idemp"], Ciudad.idemp == db.info["idemp"])
     if city_id is not None:
         query = query.where(Ciudad.id == city_id)
     return db.execute(query.order_by(Ciudad.nombre, Sucursal.nombre, Sucursal.nro)).all()
 
 
 def cities(db):
-    return list(db.scalars(select(Ciudad).order_by(Ciudad.nombre, Ciudad.id)))
+    query = select(Ciudad)
+    if db.info.get("multitenant") is True:
+        query = query.where(Ciudad.idemp == db.info["idemp"])
+    return list(db.scalars(query.order_by(Ciudad.nombre, Ciudad.id)))
 
 
 def city(db, city_id, *, lock=False):
     query = select(Ciudad).where(Ciudad.id == city_id)
+    if db.info.get("multitenant") is True:
+        query = query.where(Ciudad.idemp == db.info["idemp"])
     if lock:
         query = query.with_for_update().execution_options(populate_existing=True)
     return db.scalar(query)
@@ -43,6 +52,8 @@ def predicates(filters, *, branches=False):
 
 def list_cities(db, filters):
     conditions = predicates(filters)
+    if db.info.get("multitenant") is True:
+        conditions.append(Ciudad.idemp == db.info["idemp"])
     total = db.scalar(select(func.count()).select_from(Ciudad).where(*conditions))
     rows = list(db.scalars(select(Ciudad).where(*conditions).order_by(Ciudad.nombre, Ciudad.id)
                            .offset(filters.offset).limit(filters.limit)))
@@ -51,6 +62,8 @@ def list_cities(db, filters):
 
 def list_branches(db, filters):
     conditions = predicates(filters, branches=True)
+    if db.info.get("multitenant") is True:
+        conditions.extend((Sucursal.idemp == db.info["idemp"], Ciudad.idemp == db.info["idemp"]))
     query = select(Sucursal, Ciudad).join(Ciudad, Ciudad.id == Sucursal.idciud).where(*conditions)
     total = db.scalar(select(func.count()).select_from(Sucursal)
                       .join(Ciudad, Ciudad.id == Sucursal.idciud).where(*conditions))

@@ -14,6 +14,7 @@ from app.core.security import digest, new_credential, utcnow
 @dataclass(frozen=True)
 class Access:
     usuario_id: str
+    idemp: int | None
     password_digest: str
     expira_en: datetime
 
@@ -26,7 +27,7 @@ class AccessTokens:
         self._lock = RLock()
         self.capacity = capacity
 
-    def issue(self, usuario_id: str, password_hash: str, expires: datetime) -> str:
+    def issue(self, usuario_id: str, password_hash: str, expires: datetime, idemp: int | None = None) -> str:
         with self._lock:
             now = utcnow()
             self._entries = {
@@ -35,7 +36,7 @@ class AccessTokens:
             if len(self._entries) >= self.capacity:
                 raise DomainError(503, "accesos_no_disponibles", "No se pudo iniciar sesión. Inténtalo más tarde")
             credential = new_credential()
-            self._entries[digest(credential)] = Access(usuario_id, digest(password_hash), expires)
+            self._entries[digest(credential)] = Access(usuario_id, idemp, digest(password_hash), expires)
             return credential
 
     def get(self, credential: str) -> Access | None:

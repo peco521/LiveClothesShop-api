@@ -27,4 +27,7 @@ Thumbs.db
 docs/
 database/
 tests/
+!tests/
+tests/*
+!tests/test_multitenant.py
 

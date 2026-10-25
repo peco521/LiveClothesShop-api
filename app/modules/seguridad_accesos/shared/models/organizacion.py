@@ -1,5 +1,5 @@
 from sqlalchemy import CheckConstraint, ForeignKey, Identity, Integer, Numeric, SmallInteger, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, deferred, mapped_column
 
 from decimal import Decimal
 
@@ -8,16 +8,20 @@ from app.core.database import Base
 
 class Ciudad(Base):
     __tablename__ = "ciudad"
+    __mapper_args__ = {"eager_defaults": False}
 
     id: Mapped[int] = mapped_column(SmallInteger().with_variant(Integer, "sqlite"), Identity(), primary_key=True)
+    idemp: Mapped[int | None] = deferred(mapped_column(Integer, server_default="NULL"))
     nombre: Mapped[str] = mapped_column(String(50))
 
 
 class Sucursal(Base):
     __tablename__ = "sucursal"
+    __mapper_args__ = {"eager_defaults": False}
     __table_args__ = (CheckConstraint("estado IN ('activo', 'inactivo')"),)
 
     nro: Mapped[int] = mapped_column(Integer, primary_key=True)
+    idemp: Mapped[int | None] = deferred(mapped_column(Integer, server_default="NULL"))
     nombre: Mapped[str] = mapped_column(String(50))
     direccion: Mapped[str] = mapped_column(String(100))
     estado: Mapped[str] = mapped_column(String(20), server_default="activo")

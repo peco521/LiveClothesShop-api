@@ -53,6 +53,7 @@ def list_branches(filters: Annotated[SucursalesFiltros, Query()], db: Session = 
 @router.get("/sucursales/horarios-sugeridos", response_model=list[HorarioSugerencia])
 def suggested_hours(db: Session = Depends(get_db)):
     rows = db.execute(select(func.min(HorarioAtencion.idaten), HorarioAtencion.horaini, HorarioAtencion.horafin)
+                       .where(*([HorarioAtencion.idemp == db.info["idemp"]] if db.info.get("multitenant") else []))
                       .group_by(HorarioAtencion.horaini, HorarioAtencion.horafin)
                       .order_by(HorarioAtencion.horaini, HorarioAtencion.horafin)).all()
     return [HorarioSugerencia(idAten=id, horaIni=start, horaFin=end) for id, start, end in rows]

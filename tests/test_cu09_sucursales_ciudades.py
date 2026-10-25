@@ -485,11 +485,11 @@ def test_29_dependents_unchanged(client, branch, factory, operator):
         db.execute(text("INSERT INTO proveedor VALUES (1, 'Prueba', 'test@example.com', 'Prueba', '0')"))
         db.execute(text("INSERT INTO producto VALUES ('p', 'Prueba', 'activo', NULL, 1, 1, 1, 1)"))
         db.execute(text("INSERT INTO varianteProd VALUES ('v', 'sku', 1, 'activo', NULL, 1, 'p')"))
-        db.execute(text("INSERT INTO horario_atencion VALUES (1, '08:00', '18:00')"))
+        db.execute(text("INSERT INTO horario_atencion (idaten, horaini, horafin) VALUES (1, '08:00', '18:00')"))
         db.execute(text("INSERT INTO horario_suc (idaten,nrosuc) VALUES (1, :nro)"), {"nro": branch["nro"]})
         db.execute(text("INSERT INTO inventario VALUES (1, 10, 8, :nro, 'v')"), {"nro": branch["nro"]})
         db.execute(text("INSERT INTO reserva VALUES (1, '2026-09-12', '10:00', 'pendiente', :nro, :actor)"), {"nro": branch["nro"], "actor": operator})
-        db.execute(text("INSERT INTO venta VALUES (1, NULL, '2026-09-12 10:00', 1, 0, 'registrada', :actor, NULL, :nro, NULL, 1)"), {"actor": operator, "nro": branch["nro"]})
+        db.execute(text("INSERT INTO venta (nroventa, nit, fechahora, total, desc_aplicado, estado, idusuariocl, idusuarioemp, nrosuc, idcarrito, nroreserva) VALUES (1, NULL, '2026-09-12 10:00', 1, 0, 'registrada', :actor, NULL, :nro, NULL, 1)"), {"actor": operator, "nro": branch["nro"]})
     tables = ["empleado", "horario_atencion", "horario_suc", "inventario", "reserva", "venta", "usuario", "rol", "funcion", "rol_funcion"]
     def snapshot():
         with factory() as db:

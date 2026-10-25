@@ -33,7 +33,7 @@ def transaction(db):
 def revalidate_actor(db, actor_id):
     # Fresh reads after target/reference lock waits, without CU06's global lock.
     actor = continuidad.actor(db, actor_id)
-    if actor is None:
+    if actor is None or (db.info.get("multitenant") and actor.idemp != db.info["idemp"]):
         raise DomainError(401, "autenticacion_rechazada", "No se pudo autenticar la solicitud")
     if not continuidad.has_permission(db, actor.nrorol, "CU09"):
         raise DomainError(403, "acceso_denegado", "No tiene autorización para esta operación")
@@ -78,7 +78,10 @@ def address_coordinates(direccion, city_row, geocoder):
 
 def branch_detail(row, city_row, db):
     horarios = db.execute(select(HorarioAtencion, HorarioSuc.dias).join(HorarioSuc, HorarioSuc.idaten == HorarioAtencion.idaten)
-                          .where(HorarioSuc.nrosuc == row.nro).order_by(HorarioAtencion.horaini, HorarioAtencion.horafin)).all()
+                          .where(HorarioSuc.nrosuc == row.nro,
+                                 *([HorarioSuc.idemp == db.info["idemp"], HorarioAtencion.idemp == db.info["idemp"]]
+                                   if db.info.get("multitenant") else []))
+                          .order_by(HorarioAtencion.horaini, HorarioAtencion.horafin)).all()
     return SucursalDetalle(nro=row.nro, nombre=row.nombre, direccion=row.direccion,
                            estado=row.estado, idCiud=row.idciud, ciudad=city_detail(city_row),
                            latitud=row.latitud, longitud=row.longitud,
@@ -89,25 +92,30 @@ def replace_hours(db, branch_id, ranges):
     # Los rangos pueden compartirse: cambiar únicamente los enlaces de esta sucursal.
     # La BD original usa un SMALLINT manual. El bloqueo serializa la asignación
     # incluso con otras conexiones que insertan horarios, sin cambiar el esquema.
-    if db.get_bind().dialect.name == "postgresql":
+    if db.get_bind().dialect.name == "postgresql" and not db.info.get("multitenant"):
         db.execute(text("LOCK TABLE horario_atencion IN SHARE ROW EXCLUSIVE MODE"))
     ids = []
     for hours in ranges:
         start = hours.horaIni if hasattr(hours, "horaIni") else hours["horaIni"]
         end = hours.horaFin if hasattr(hours, "horaFin") else hours["horaFin"]
-        row = db.scalar(select(HorarioAtencion).where(HorarioAtencion.horaini == start, HorarioAtencion.horafin == end)
-                        .order_by(HorarioAtencion.idaten).limit(1))
+        row = db.scalar(select(HorarioAtencion).where(HorarioAtencion.horaini == start, HorarioAtencion.horafin == end,
+                         *([HorarioAtencion.idemp == db.info["idemp"]] if db.info.get("multitenant") else []))
+                         .order_by(HorarioAtencion.idaten).limit(1))
         if row is None:
-            next_id = max(0, db.scalar(select(func.max(HorarioAtencion.idaten))) or 0) + 1
+            next_id = (db.scalar(text("SELECT nextval(pg_get_serial_sequence('horario_atencion','idaten'))"))
+                       if db.info.get("multitenant") else max(0, db.scalar(select(func.max(HorarioAtencion.idaten))) or 0) + 1)
             if next_id > 32767:
                 raise DomainError(409, "horarios_agotados", "Se alcanzó el límite de horarios registrados")
-            row = HorarioAtencion(idaten=next_id, horaini=start, horafin=end)
+            tenant = {"idemp": db.info["idemp"]} if db.info.get("multitenant") else {}
+            row = HorarioAtencion(idaten=next_id, horaini=start, horafin=end, **tenant)
             db.add(row)
             db.flush()
         days = hours.dias if hasattr(hours, "dias") else hours["dias"]
         ids.append((row.idaten, guardar_dias(days)))
-    db.execute(delete(HorarioSuc).where(HorarioSuc.nrosuc == branch_id))
-    db.add_all([HorarioSuc(nrosuc=branch_id, idaten=idaten, dias=dias) for idaten, dias in ids])
+    db.execute(delete(HorarioSuc).where(HorarioSuc.nrosuc == branch_id,
+                *([HorarioSuc.idemp == db.info["idemp"]] if db.info.get("multitenant") else [])))
+    tenant = {"idemp": db.info["idemp"]} if db.info.get("multitenant") else {}
+    db.add_all([HorarioSuc(nrosuc=branch_id, idaten=idaten, dias=dias, **tenant) for idaten, dias in ids])
     db.flush()
 
 
@@ -131,7 +139,8 @@ def list_branches(db, filters):
 def create_city(db, data, actor_id, peer):
     with transaction(db):
         revalidate_actor(db, actor_id)
-        row = Ciudad(nombre=data.nombre)
+        tenant = {"idemp": db.info["idemp"]} if db.info.get("multitenant") else {}
+        row = Ciudad(nombre=data.nombre, **tenant)
         repository.add(db, row)
         record(db, "ciudad_creada", actor_id, peer, True)
         result = city_detail(row)
@@ -154,8 +163,9 @@ def create_branch(db, data, actor_id, peer, geocoder=None):
         city_row = city(db, data.idCiud, lock=True, reference=True)
         revalidate_actor(db, actor_id)
         latitud, longitud = address_coordinates(data.direccion, city_row, geocoder)
+        tenant = {"idemp": db.info["idemp"]} if db.info.get("multitenant") else {}
         row = Sucursal(nombre=data.nombre, direccion=data.direccion, estado=data.estado,
-                       idciud=data.idCiud, latitud=latitud, longitud=longitud)
+                       idciud=data.idCiud, latitud=latitud, longitud=longitud, **tenant)
         repository.add(db, row)
         if data.horarios:
             replace_hours(db, row.nro, data.horarios)

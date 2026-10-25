@@ -44,6 +44,7 @@ class Registro(PublicInput):
 
 
 class Login(PublicInput):
+    empresa: Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z0-9-]{1,30}$")] | None = None
     correo: EmailStr = Field(max_length=100)
     contrasena: SecretStr = Field(min_length=1, max_length=128)
     _correo = field_validator("correo", mode="before")(normalize_email)
@@ -73,6 +74,7 @@ class RolResponse(BaseModel):
 
 
 class AuthResponse(BaseModel):
+    empresa: str | None = None
     usuario: UsuarioResponse
     rol: RolResponse
     permisos: list[str]

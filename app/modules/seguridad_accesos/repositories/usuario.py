@@ -9,6 +9,8 @@ from app.modules.seguridad_accesos.repositories import cliente as cliente_repo
 def by_email(db, email: str, *, lock=False):
     # Includes pre-existing addresses whose case was not normalized.
     query = select(Usuario).where(func.lower(func.trim(Usuario.correo)) == email).order_by(Usuario.idusuario)
+    if db.info.get("multitenant") is True:
+        query = query.where(Usuario.idemp == db.info["idemp"])
     return list(db.scalars(query.with_for_update() if lock else query))
 
 

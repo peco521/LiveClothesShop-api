@@ -3,9 +3,10 @@ from time import monotonic, sleep
 from datetime import timedelta
 from uuid import uuid4
 
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from app.core.database import is_postgresql
+from app.core.database import is_postgresql, tenant_context
 from app.core.errors import DomainError
 from app.core.security import digest, new_credential, utcnow
 from app.modules.seguridad_accesos.models import RecuperacionContrasena, Usuario
@@ -65,7 +66,13 @@ def public_identity(db, user, expires):
     # cuenta dada de baja no inicia sesión ni continúa con una sesión abierta.
     if role is None or role.estado != "activo" or usuario.account_blocked(db, user):
         raise authentication_failed()
+    if db.info.get("multitenant") and (user.idemp != db.info.get("idemp") or role.idemp != user.idemp):
+        raise authentication_failed()
+    company = db.info.get("empresa")
+    if db.info.get("multitenant") and not company:
+        raise authentication_failed()
     return AuthResponse(
+        empresa=company,
         usuario=UsuarioResponse(idUsuario=user.idusuario, tipo=user.tipo, nombre=user.nombre, correo=user.correo),
         rol=RolResponse(nro=role.nro, descripcion=role.descripcion),
         permisos=rol.permissions(db, role.nro), expiraEn=expires,
@@ -77,6 +84,15 @@ def login(db, data, settings, passwords, peer, access_tokens, *, allowed_types=N
     response = None
     try:
         with db.begin():
+            if settings.multitenant_enabled:
+                if not data.empresa or not is_postgresql(db):
+                    raise authentication_failed()
+                # The only pre-tenant lookup is a restricted SECURITY DEFINER function.
+                idemp = db.scalar(text("SELECT auth_resolver_empresa(:codigo)"), {"codigo": data.empresa})
+                if idemp is None:
+                    raise authentication_failed()
+                tenant_context(db, idemp)
+                db.info["empresa"] = data.empresa
             matches = usuario.by_email(db, str(data.correo), lock=True)
             user = matches[0] if len(matches) == 1 else None
             password = data.contrasena.get_secret_value()
@@ -96,7 +112,7 @@ def login(db, data, settings, passwords, peer, access_tokens, *, allowed_types=N
                     # The access token must reference the NEW password digest.
                 expires = utcnow() + timedelta(hours=settings.session_hours)
                 response = public_identity(db, user, expires)
-                credential = access_tokens.issue(user.idusuario, user.contrasena, expires)
+                credential = access_tokens.issue(user.idusuario, user.contrasena, expires, db.info.get("idemp"))
                 record(db, "login_correcto", user.idusuario, peer, True)
             else:
                 # No identity or email is recorded for rejected requests.
@@ -122,9 +138,23 @@ def authenticated_session(db, credential, access_tokens):
     access = access_tokens.get(credential)
     if access is None:
         raise authentication_failed()
+    if db.info.get("multitenant"):
+        if access.idemp is None or not is_postgresql(db):
+            raise authentication_failed()
+        tenant_context(db, access.idemp)
+        # Lookup by validated session tenant; no client-controlled idEmp.
+        db.info["empresa"] = db.scalar(text("""SELECT e.codigo FROM empresa e WHERE e.idemp = :idemp
+            AND e.estado = 'activa' AND EXISTS (SELECT 1 FROM suscripcion s
+            WHERE s.idemp = e.idemp AND s.estado = 'activa'
+              AND CURRENT_DATE BETWEEN s.fechainicio AND s.fechavencimiento)"""),
+                                        {"idemp": access.idemp})
+        if not db.info["empresa"]:
+            access_tokens.revoke(credential)
+            raise authentication_failed()
     user = db.get(Usuario, access.usuario_id)
     # Cambiar la contraseña invalida también accesos previos y otros dispositivos.
-    if user is None or not secrets.compare_digest(access.password_digest, digest(user.contrasena)):
+    if (user is None or (db.info.get("multitenant") and user.idemp != access.idemp)
+            or not secrets.compare_digest(access.password_digest, digest(user.contrasena))):
         access_tokens.revoke(credential)
         raise authentication_failed()
     return access, public_identity(db, user, access.expira_en)

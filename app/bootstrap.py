@@ -42,6 +42,8 @@ def main(argv=None):
     try:
         data = prompt_superadmin() if args.crear_superadmin else None
         settings = Settings()
+        if settings.multitenant_enabled:
+            raise BootstrapError("El bootstrap anterior no aprovisiona empresas; use un proceso SaaS separado.")
         passwords = Passwords(settings.password_storage) if data is not None else None
         engine, factory = create_database(settings.database_url.get_secret_value())
         try:

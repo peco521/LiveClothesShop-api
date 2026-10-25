@@ -1,14 +1,15 @@
 from datetime import date
 
-from sqlalchemy import CheckConstraint, Date, ForeignKey, JSON, String, Text
+from sqlalchemy import CheckConstraint, Date, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, deferred, mapped_column
 
 from app.core.database import Base
 
 
 class Usuario(Base):
     __tablename__ = "usuario"
+    __mapper_args__ = {"eager_defaults": False}
     __table_args__ = (
         CheckConstraint("sexo IN ('M', 'F')"),
         CheckConstraint("tipo IN ('E', 'A', 'C')"),
@@ -16,11 +17,13 @@ class Usuario(Base):
 
     idusuario: Mapped[str] = mapped_column(String, primary_key=True)
     ci: Mapped[str] = mapped_column(String)
-    nombre: Mapped[str] = mapped_column(String(100))
+    # CU07 admite nombres NULL en cuentas heredadas; las altas siguen validadas.
+    nombre: Mapped[str | None] = mapped_column(String(100))
     apellidopat: Mapped[str] = mapped_column(String(50))
     apellidomat: Mapped[str] = mapped_column(String(50))
     sexo: Mapped[str] = mapped_column(String(1))
-    correo: Mapped[str] = mapped_column(String(100), unique=True)
+    correo: Mapped[str] = mapped_column(String(100))
+    idemp: Mapped[int | None] = deferred(mapped_column(Integer, server_default="NULL"))
     telefono: Mapped[str] = mapped_column(String(20))
     direccion: Mapped[str] = mapped_column(String(150))
     contrasena: Mapped[str] = mapped_column(Text)

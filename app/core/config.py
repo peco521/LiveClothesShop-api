@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     cliente_rol_id: str = Field(min_length=1, max_length=15)
     session_hours: int = Field(default=8, ge=1, le=168)
     environment: Literal["development", "production", "test"] = "development"
+    multitenant_enabled: bool = True
     password_storage: Literal["argon2id", "plaintext"] = "argon2id"
     cookie_secure: bool = False
     cookie_samesite: Literal["lax", "strict", "none"] = "lax"
@@ -63,6 +64,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_security(self):
+        if self.environment == "production" and not self.multitenant_enabled:
+            raise ValueError("MULTITENANT_ENABLED es obligatorio en producción")
         if self.environment == "production" and self.password_storage == "plaintext":
             raise ValueError("PASSWORD_STORAGE=plaintext solo está permitido en desarrollo o pruebas")
         if not self.database_url.get_secret_value().startswith("postgresql+psycopg://"):

@@ -2,7 +2,7 @@ from datetime import date, datetime, time
 from decimal import Decimal
 
 from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Integer, Numeric, SmallInteger, String, Time, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, deferred, mapped_column
 
 from app.core.database import Base
 
@@ -32,16 +32,20 @@ class DetalleReserva(Base):
 
 class HorarioAtencion(Base):
     __tablename__ = "horario_atencion"
+    __mapper_args__ = {"eager_defaults": False}
 
     idaten: Mapped[int] = mapped_column(SmallInteger, primary_key=True, autoincrement=False)
+    idemp: Mapped[int | None] = deferred(mapped_column(Integer, server_default="NULL"))
     horaini: Mapped[time] = mapped_column(Time)
     horafin: Mapped[time] = mapped_column(Time)
 
 
 class HorarioSuc(Base):
     __tablename__ = "horario_suc"
+    __mapper_args__ = {"eager_defaults": False}
 
     dias: Mapped[str] = mapped_column(String(100), server_default="Lunes,Martes,Miercoles,Jueves,Viernes,Sabado,Domingo")
+    idemp: Mapped[int | None] = deferred(mapped_column(Integer, server_default="NULL"))
 
     idaten: Mapped[int] = mapped_column(ForeignKey("horario_atencion.idaten", onupdate="CASCADE", ondelete="CASCADE"),
                                         primary_key=True)
@@ -91,6 +95,8 @@ class Venta(Base):
     nrosuc: Mapped[int] = mapped_column(ForeignKey("sucursal.nro", onupdate="CASCADE", ondelete="CASCADE"))
     idcarrito: Mapped[int | None] = mapped_column(ForeignKey("carrito.idcarrito", onupdate="CASCADE", ondelete="CASCADE"))
     nroreserva: Mapped[int | None] = mapped_column(ForeignKey("reserva.nroreserva", onupdate="CASCADE", ondelete="CASCADE"))
+    # CU24 conserva la columna legada mientras no se migren sus datos a
+    # idOperacion UUID en el esquema SaaS (cuya caja sigue deshabilitada).
     claveoperacion: Mapped[str | None] = mapped_column(String(36), unique=True)
 
 

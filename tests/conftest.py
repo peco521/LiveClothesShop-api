@@ -1,6 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -14,7 +14,7 @@ from app.modules.seguridad_accesos.models import Rol
 def settings():
     # This URL is deliberately never used: all tests inject the SQLite factory.
     return Settings(_env_file=None, database_url="postgresql+psycopg://unused@localhost/unused",
-                    cliente_rol_id="cliente", environment="test",
+                     cliente_rol_id="cliente", environment="test", multitenant_enabled=False,
                     allowed_origins=["http://localhost:4200"])
 
 
@@ -29,6 +29,9 @@ def factory():
         connection.execute("PRAGMA foreign_keys=ON")
 
     Base.metadata.create_all(engine)
+    # El fixture legado reproduce la unicidad global de la BD anterior.
+    with engine.begin() as connection:
+        connection.execute(text("CREATE UNIQUE INDEX uq_legacy_usuario_correo ON usuario(correo)"))
     factory = sessionmaker(engine, expire_on_commit=False)
     with factory.begin() as db:
         db.add(Rol(nro="cliente", descripcion="Cliente"))

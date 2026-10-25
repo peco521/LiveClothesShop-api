@@ -86,7 +86,8 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
                 except Exception:
                     logging.getLogger(__name__).warning('No se pudo ejecutar el vencimiento de reservas; se reintentará')
                 await asyncio.sleep(60)
-        expiry_task = asyncio.create_task(expire_reservations()) if config.environment != 'test' else None
+        # Global expiry must run under a separately authorized service identity.
+        expiry_task = asyncio.create_task(expire_reservations()) if config.environment != 'test' and not config.multitenant_enabled else None
         owned_delivery = configured_gmail_delivery(config) if recovery_delivery is None else None
         application.state.recovery_delivery = recovery_delivery if recovery_delivery is not None else owned_delivery
         try:
@@ -104,12 +105,20 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
             if engine is not None:
                 engine.dispose()
 
-    application = FastAPI(title="LiveClothesShop API", version="1.0.0", lifespan=lifespan)
+    application = FastAPI(title="FashionStore API", version="1.0.0", lifespan=lifespan)
     register_handlers(application)
 
     @application.middleware("http")
     async def protect_requests(request: Request, call_next):
         config = request.app.state.settings
+        if config.multitenant_enabled and request.url.path.startswith("/api/"):
+            path = request.url.path
+            allowed_auth = path in {"/api/auth/login", "/api/auth/login/admin",
+                                    "/api/auth/login/cliente", "/api/auth/me", "/api/auth/logout"}
+            allowed_cu09 = any(path == prefix or path.startswith(prefix + "/")
+                               for prefix in ("/api/admin/ciudades", "/api/admin/sucursales"))
+            if not (allowed_auth or allowed_cu09):
+                return error_response(503, "modulo_pendiente", "Módulo pendiente de aislamiento por empresa")
         origin = request.headers.get("origin")
         is_auth = request.url.path.startswith("/api/auth/")
         is_cu05 = any(request.url.path == prefix or request.url.path.startswith(prefix + "/")
@@ -165,7 +174,7 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
 
     @application.get("/")
     def root():
-        return {"message": "LiveClothesShop API funcionando"}
+        return {"message": "FashionStore API funcionando"}
 
     @application.get("/health")
     def health():

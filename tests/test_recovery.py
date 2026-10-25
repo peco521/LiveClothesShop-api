@@ -261,7 +261,8 @@ def test_concurrent_single_use_isolated_sqlite(tmp_path, settings, registration,
         with factory.begin() as db:
             db.add(Rol(nro="cliente", descripcion="Cliente"))
         with factory() as db:
-            auth.register(db, Registro(**registration), settings, passwords, None)
+            from app.core.access_tokens import AccessTokens
+            auth.register(db, Registro(**registration), settings, passwords, None, AccessTokens())
         fake = FakeDelivery()
         with factory() as db:
             auth.request_recovery(db, RecuperarContrasena(correo=registration["correo"]), fake, None)
