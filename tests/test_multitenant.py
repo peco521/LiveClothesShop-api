@@ -78,14 +78,20 @@ def test_pending_routes_are_closed_and_login_requires_postgresql(settings, facto
     config = settings.model_copy(update={"multitenant_enabled": True})
     with TestClient(create_app(config, factory), raise_server_exceptions=False) as client:
         client.headers.update({"Origin": "http://localhost:4200", "X-CSRF-Protection": "1"})
+        # Modulos no incluidos en la lista explicita de aislamiento verificado.
         for method, path in (("GET", "/api/catalogo"), ("GET", "/api/admin/roles"),
                              ("GET", "/api/admin/usuarios"), ("GET", "/api/admin/clientes"),
-                             ("GET", "/api/admin/bitacora"), ("GET", "/api/admin/reportes"),
-                             ("POST", "/api/auth/registro"),
-                             ("POST", "/api/auth/recuperar-contrasena"),
-                             ("POST", "/api/auth/restablecer-contrasena")):
-            response = client.request(method, path, json={} if method == "POST" else None)
+                             ("GET", "/api/admin/bitacora"), ("GET", "/api/admin/reportes")):
+            response = client.request(method, path)
             assert response.status_code == 503 and response.json()["error"]["code"] == "modulo_pendiente"
+        # Las rutas de autenticacion siguen disponibles: no exponen datos de
+        # empresa y son necesarias para iniciar sesion. Con cuerpo invalido
+        # responden 422, nunca 503 modulo_pendiente.
+        for path in ("/api/auth/registro", "/api/auth/recuperar-contrasena",
+                     "/api/auth/restablecer-contrasena"):
+            response = client.post(path, json={})
+            assert response.status_code == 422, response.text
+            assert response.json()["error"]["code"] == "datos_invalidos"
         assert client.post("/api/auth/login", json={"empresa": "uno", "correo": "igual@example.com",
                                                        "contrasena": "123"}).status_code == 401
 

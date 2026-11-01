@@ -312,10 +312,9 @@ def test_pg_lock_contract_and_isolation_fail_closed():
     db.get_bind.return_value.dialect.name = "postgresql"
     db.connection.return_value.get_isolation_level.return_value = "READ COMMITTED"
     locks.lock(db)
-    query = db.scalar.call_args.args[0]
-    assert "FOR UPDATE" in str(query.compile(dialect=postgresql.dialect()))
-    assert query.compile().params == {"id_1": "CU06"}
-    assert query.get_execution_options()["populate_existing"] is True
+    query = db.execute.call_args.args[0]
+    assert "pg_advisory_xact_lock(1179862356, 6)" in str(query)
+    db.execute.assert_called_once()
     for level in ("REPEATABLE READ", "SERIALIZABLE"):
         db.connection.return_value.get_isolation_level.return_value = level
         with pytest.raises(DomainError) as error:

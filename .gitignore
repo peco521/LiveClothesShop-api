@@ -7,6 +7,7 @@ __pycache__/
 .env
 .env.*
 !.env.example
+.local/
 
 # Virtual environments
 venv/
@@ -30,4 +31,5 @@ tests/
 !tests/
 tests/*
 !tests/test_multitenant.py
+!tests/test_saas_postgres.py
 

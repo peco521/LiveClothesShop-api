@@ -27,6 +27,20 @@ class Settings(BaseSettings):
     )
 
     database_url: SecretStr
+    # Rol de base de datos para el panel SaaS y el aprovisionamiento: debe tener
+    # BYPASSRLS y NO se usa nunca en las rutas HTTP de empresa. Si falta, las
+    # rutas /api/saas responden 503 plataforma_no_configurada.
+    platform_database_url: SecretStr | None = None
+    # Modo demostracion: habilita el endpoint de credenciales de prueba y la
+    # carga de tenants de demostracion. Prohibido en produccion.
+    demo_mode: bool = False
+    demo_credentials_file: str = ""
+    # Lista explicita (CSV) de modulos empresariales ya aislados y verificados.
+    # Todo lo que no figure aqui sigue devolviendo 503 modulo_pendiente.
+    multitenant_modules: str = ""
+    # Motor de sincronizacion offline.
+    sync_max_operations: int = Field(default=50, ge=1, le=200)
+    sync_stale_minutes: int = Field(default=5, ge=1, le=60)
     cliente_rol_id: str = Field(min_length=1, max_length=15)
     session_hours: int = Field(default=8, ge=1, le=168)
     environment: Literal["development", "production", "test"] = "development"
@@ -66,6 +80,17 @@ class Settings(BaseSettings):
     def validate_security(self):
         if self.environment == "production" and not self.multitenant_enabled:
             raise ValueError("MULTITENANT_ENABLED es obligatorio en producción")
+        if self.environment == "production" and self.demo_mode:
+            raise ValueError("DEMO_MODE solo está permitido en desarrollo o pruebas")
+        if self.platform_database_url is not None:
+            valor = self.platform_database_url.get_secret_value()
+            if not valor.startswith("postgresql+psycopg://"):
+                raise ValueError("PLATFORM_DATABASE_URL debe utilizar PostgreSQL con Psycopg 3")
+            try:
+                if not make_url(valor).database:
+                    raise ValueError
+            except (ArgumentError, ValueError):
+                raise ValueError("PLATFORM_DATABASE_URL no tiene un formato válido") from None
         if self.environment == "production" and self.password_storage == "plaintext":
             raise ValueError("PASSWORD_STORAGE=plaintext solo está permitido en desarrollo o pruebas")
         if not self.database_url.get_secret_value().startswith("postgresql+psycopg://"):
@@ -105,6 +130,15 @@ class Settings(BaseSettings):
             if not self.geocoding_user_agent.strip():
                 raise ValueError("GEOCODING_USER_AGENT es obligatorio para usar Nominatim")
         return self
+
+    @property
+    def enabled_tenant_modules(self) -> frozenset[str]:
+        """Modulos empresariales ya aislados por empresa y verificados.
+
+        Se declara de forma explicita, no por ausencia de bloqueo: un modulo que
+        no figure aqui devuelve 503 en multitenant.
+        """
+        return frozenset(part.strip() for part in self.multitenant_modules.split(",") if part.strip())
 
     @property
     def stripe_mode(self) -> ModoStripe:

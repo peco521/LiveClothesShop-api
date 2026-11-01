@@ -13,10 +13,33 @@ def create_database(url: str):
     return engine, sessionmaker(bind=engine, expire_on_commit=False)
 
 
+def create_platform_database(url: str):
+    """Motor del panel SaaS / aprovisionamiento.
+
+    Usa un rol de base de datos con BYPASSRLS y no se expone a las rutas HTTP de
+    empresa: `get_db` sigue entregando el motor del rol de aplicacion.
+    """
+    return create_database(url)
+
+
 def get_db(request: Request):
     with request.app.state.session_factory() as db:
         try:
             db.info["multitenant"] = request.app.state.settings.multitenant_enabled
+            yield db
+        finally:
+            db.rollback()
+
+
+def get_platform_db(request: Request):
+    """Sesion privilegiada para /api/saas. No se usa en rutas de empresa."""
+    factory = getattr(request.app.state, "platform_session_factory", None)
+    if factory is None:
+        from app.core.errors import DomainError
+        raise DomainError(503, "plataforma_no_configurada",
+                          "La administracion de plataforma no esta configurada")
+    with factory() as db:
+        try:
             yield db
         finally:
             db.rollback()
@@ -29,6 +52,27 @@ def apply_tenant_on_transaction(session, transaction, connection):
             and not transaction.nested and session.info.get("idemp") is not None):
         connection.execute(text("SELECT set_config('app.idemp', :idemp, true)"),
                            {"idemp": str(session.info["idemp"])})
+
+
+@event.listens_for(Session, "before_flush")
+def fill_tenant_on_pending_objects(session, flush_context, instances):
+    """Completa `idemp` en altas del tenant antes de emitir el INSERT.
+
+    Evita que cada repositorio tenga que recordar el tenant, mantiene el valor
+    inmutable (los triggers lo revalidan) y funciona tambien tras commit o
+    rollback porque toma el valor de `session.info`, no de la transaccion.
+    """
+    if not session.info.get("multitenant"):
+        return
+    idemp = session.info.get("idemp")
+    if idemp is None:
+        return
+    for obj in session.new:
+        table = getattr(obj, "__table__", None)
+        if table is None or "idemp" not in table.c:
+            continue
+        if getattr(obj, "idemp", None) is None:
+            obj.idemp = idemp
 
 
 def tenant_context(db, idemp: int):

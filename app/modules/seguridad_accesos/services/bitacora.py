@@ -29,8 +29,10 @@ def record(db, action: Literal["cliente_registrado", "login_correcto", "login_re
                                "reserva_creada", "reserva_cancelada", "reserva_vencida",
                                "carrito_item_agregado", "carrito_item_actualizado", "carrito_item_eliminado",
                                "venta_registrada", "pago_iniciado", "pago_aprobado", "pago_rechazado",
-                               "venta_anulada", "catalogo_guardado", "catalogo_eliminado", "proveedor_guardado",
-                               "proveedor_eliminado", "inventario_movimiento_registrado"],
+                                "venta_anulada", "catalogo_guardado", "catalogo_eliminado", "proveedor_guardado",
+                               "proveedor_eliminado", "inventario_movimiento_registrado",
+                               "venta_caja_preparada", "venta_caja_pagada", "venta_caja_pago_electronico",
+                               "venta_caja_cancelada"],
            user_id: str | None, peer: str | None, success: bool):
     try:
         ip = str(ip_address(peer)) if peer else None

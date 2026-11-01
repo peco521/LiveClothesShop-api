@@ -1,4 +1,4 @@
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 
 from app.core.errors import DomainError
 from app.modules.seguridad_accesos.models import Funcion, Rol, RolFuncion, Usuario
@@ -14,6 +14,12 @@ def lock(db):
     if db.get_bind().dialect.name == "postgresql":
         if db.connection().get_isolation_level() != "READ COMMITTED":
             raise DomainError(503, "aislamiento_no_compatible", "La operación requiere aislamiento READ COMMITTED")
+        # The HTTP role is intentionally read-only on global `funcion`; SELECT
+        # FOR UPDATE requires UPDATE privilege even when no values are changed.
+        # A transaction-scoped advisory lock preserves serialization without
+        # widening table grants or crossing tenant data boundaries.
+        db.execute(text("SELECT pg_advisory_xact_lock(1179862356, 6)"))
+        return
     return db.scalar(select(Funcion).where(Funcion.id == "CU06").with_for_update()
                      .execution_options(populate_existing=True))
 

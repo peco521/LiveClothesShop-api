@@ -66,6 +66,18 @@ def public_identity(db, user, expires):
     # cuenta dada de baja no inicia sesión ni continúa con una sesión abierta.
     if role is None or role.estado != "activo" or usuario.account_blocked(db, user):
         raise authentication_failed()
+    if user.tipo == "S":
+        # Administrador de plataforma: idEmp NULL, rol SAAS-ADMIN y permisos
+        # propios (SAAS-*), nunca permisos empresariales CU05..CU25.
+        if user.idemp is not None or role.idemp is not None:
+            raise authentication_failed()
+        return AuthResponse(
+            empresa=None, plataforma=True,
+            usuario=UsuarioResponse(idUsuario=user.idusuario, tipo=user.tipo, nombre=user.nombre, correo=user.correo),
+            rol=RolResponse(nro=role.nro, descripcion=role.descripcion),
+            permisos=[p for p in rol.permissions(db, role.nro) if p.startswith("SAAS-")],
+            expiraEn=expires,
+        )
     if db.info.get("multitenant") and (user.idemp != db.info.get("idemp") or role.idemp != user.idemp):
         raise authentication_failed()
     company = db.info.get("empresa")
@@ -82,6 +94,9 @@ def public_identity(db, user, expires):
 def login(db, data, settings, passwords, peer, access_tokens, *, allowed_types=None):
     credential = None
     response = None
+    if allowed_types is None:
+        # El login de empresa nunca admite al administrador de plataforma.
+        allowed_types = {"A", "C", "E"}
     try:
         with db.begin():
             if settings.multitenant_enabled:
@@ -129,6 +144,51 @@ def login(db, data, settings, passwords, peer, access_tokens, *, allowed_types=N
     return response, credential
 
 
+def login_platform(db, data, settings, passwords, peer, access_tokens):
+    """Login del administrador SaaS sobre la conexión de plataforma.
+
+    `db` debe provenir del motor de aprovisionamiento (BYPASSRLS): la cuenta de
+    plataforma tiene idEmp NULL y no es visible para el rol HTTP de empresa.
+    """
+    credential = None
+    response = None
+    try:
+        with db.begin():
+            matches = usuario.by_email(db, str(data.correo), lock=True)
+            user = matches[0] if len(matches) == 1 else None
+            password = data.contrasena.get_secret_value()
+            valid, _ = passwords.verify_for_login(user.contrasena if user else None, password)
+            if (valid and user is not None and user.tipo == "S" and user.idemp is None
+                    and rol.get(db, user.nrorol) is not None):
+                expires = utcnow() + timedelta(hours=settings.session_hours)
+                response = public_identity(db, user, expires)
+                credential = access_tokens.issue(user.idusuario, user.contrasena, expires,
+                                                 None, plataforma=True)
+                record(db, "login_correcto", user.idusuario, peer, True)
+            else:
+                record(db, "login_rechazado", None, peer, False)
+    except Exception:
+        if credential is not None:
+            access_tokens.revoke(credential)
+        raise
+    if credential is None:
+        raise authentication_failed()
+    return response, credential
+
+
+def platform_session(db, credential, access_tokens):
+    """Sesión de plataforma. Rechaza tokens emitidos para una empresa."""
+    access = access_tokens.get(credential)
+    if access is None or not access.plataforma:
+        raise authentication_failed()
+    user = db.get(Usuario, access.usuario_id)
+    if (user is None or user.tipo != "S" or user.idemp is not None
+            or not secrets.compare_digest(access.password_digest, digest(user.contrasena))):
+        access_tokens.revoke(credential)
+        raise authentication_failed()
+    return access, public_identity(db, user, access.expira_en)
+
+
 def current_session(db, credential, access_tokens):
     _, identity = authenticated_session(db, credential, access_tokens)
     return identity
@@ -137,6 +197,9 @@ def current_session(db, credential, access_tokens):
 def authenticated_session(db, credential, access_tokens):
     access = access_tokens.get(credential)
     if access is None:
+        raise authentication_failed()
+    # Un token de plataforma no sirve en rutas de empresa (y viceversa).
+    if access.plataforma:
         raise authentication_failed()
     if db.info.get("multitenant"):
         if access.idemp is None or not is_postgresql(db):
@@ -161,9 +224,15 @@ def authenticated_session(db, credential, access_tokens):
 
 
 def logout(db, credential, peer, access_tokens):
+    access = access_tokens.get(credential)
+    if access is None:
+        raise authentication_failed()
     with db.begin():
-        access, _ = authenticated_session(db, credential, access_tokens)
-        record(db, "logout_correcto", access.usuario_id, peer, True)
+        if access.plataforma:
+            current, _ = platform_session(db, credential, access_tokens)
+        else:
+            current, _ = authenticated_session(db, credential, access_tokens)
+        record(db, "logout_correcto", current.usuario_id, peer, True)
     access_tokens.revoke(credential)
 
 

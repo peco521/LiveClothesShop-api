@@ -27,6 +27,9 @@ class RolFuncion(Base):
     __tablename__ = "rol_funcion"
     nrorol: Mapped[str] = mapped_column(
         ForeignKey("rol.nro", onupdate="CASCADE", ondelete="CASCADE"), primary_key=True)
+    # Tenant ownership is required by the PostgreSQL RLS WITH CHECK policy.
+    # The authenticated session fills this; clients cannot submit it.
+    idemp: Mapped[int | None] = deferred(mapped_column(Integer, server_default="NULL"))
     idfun: Mapped[str] = mapped_column(
         ForeignKey("funcion.id", onupdate="CASCADE", ondelete="CASCADE"), primary_key=True)
     descripcion: Mapped[str] = mapped_column(String(100))

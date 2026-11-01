@@ -50,6 +50,14 @@ class Login(PublicInput):
     _correo = field_validator("correo", mode="before")(normalize_email)
 
 
+class LoginPlataforma(PublicInput):
+    """Credenciales del administrador SaaS: nunca llevan codigo de empresa."""
+
+    correo: EmailStr = Field(max_length=100)
+    contrasena: SecretStr = Field(min_length=1, max_length=128)
+    _correo = field_validator("correo", mode="before")(normalize_email)
+
+
 class RecuperarContrasena(PublicInput):
     correo: EmailStr = Field(max_length=100)
     _correo = field_validator("correo", mode="before")(normalize_email)
@@ -63,7 +71,7 @@ class RestablecerContrasena(PublicInput):
 
 class UsuarioResponse(BaseModel):
     idUsuario: str
-    tipo: Literal["A", "C", "E"]
+    tipo: Literal["A", "C", "E", "S"]
     nombre: str | None = Field(validation_alias=AliasChoices("nombre", "nombres"), serialization_alias="nombres")
     correo: str
 
@@ -74,7 +82,11 @@ class RolResponse(BaseModel):
 
 
 class AuthResponse(BaseModel):
+    # Empresa del tenant; None para el administrador de plataforma.
     empresa: str | None = None
+    # True solo para usuarios tipo 'S' (idEmp NULL). Un cliente debe usar esta
+    # bandera, no la forma del rol, para separar la consola SaaS del panel.
+    plataforma: bool = False
     usuario: UsuarioResponse
     rol: RolResponse
     permisos: list[str]

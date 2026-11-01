@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.core.access_tokens import AccessTokens
-from app.core.database import create_database
+from app.core.database import create_database, create_platform_database
 from app.core.errors import error_response, register_handlers
 from app.core.security import Passwords
 from app.modules.seguridad_accesos.routers.auth import router
@@ -40,6 +40,31 @@ from app.modules.inventario_productos.cu22_gestionar_reservas_sucursal.routers.r
 from app.modules.inventario_productos.cu23_gestionar_devoluciones.routers.devoluciones import router as cu23_router
 from app.modules.inventario_productos.cu24_registrar_venta.routers.ventas import router as cu24_router
 from app.modules.inventario_productos.cu25_reportes.routers.reportes import router as cu25_router
+from app.modules.plataforma_saas.routers import router as saas_router
+from app.modules.sincronizacion.routers import router as sync_router
+
+
+# Rutas de /api que ya estan aisladas por empresa y verificadas. Un modulo que
+# no figure aqui devuelve 503 modulo_pendiente en modo multitenant. Debe
+# coincidir con MULTITENANT_MODULES (CSV) para habilitarlo en ejecucion.
+MODULE_PREFIXES = {
+    "cu05": ("/api/admin/usuarios", "/api/admin/empleados"),
+    "cu06": ("/api/admin/roles", "/api/admin/funciones"),
+    "cu09": ("/api/admin/ciudades", "/api/admin/sucursales"),
+    # En SaaS CU24 habilita solo sus lecturas de catálogo/referencias; las
+    # mutaciones legacy siguen bloqueadas. Las ventas offline usan /api/sync.
+    "cu24": ("/api/admin/caja/referencias", "/api/admin/caja/productos",
+             "/api/admin/caja/clientes"),
+    "sync": ("/api/sync",),
+    "saas": ("/api/saas",),
+}
+
+# Rutas de autenticacion siempre disponibles: no exponen datos de empresa.
+AUTH_PATHS = frozenset({
+    "/api/auth/login", "/api/auth/login/admin", "/api/auth/login/cliente",
+    "/api/auth/login/saas", "/api/auth/me", "/api/auth/logout",
+    "/api/auth/registro", "/api/auth/recuperar-contrasena", "/api/auth/restablecer-contrasena",
+})
 
 
 def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryDelivery | None = None,
@@ -75,6 +100,14 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
         else:
             factory = session_factory
         application.state.session_factory = factory
+        # Panel SaaS: motor separado con rol BYPASSRLS. Nunca se usa en rutas de
+        # empresa y no se expone al frontend ni al movil.
+        platform_engine = None
+        platform_factory = None
+        if config.platform_database_url is not None:
+            platform_engine, platform_factory = create_platform_database(
+                config.platform_database_url.get_secret_value())
+        application.state.platform_session_factory = platform_factory
         async def expire_reservations():
             from app.modules.inventario_productos.cu22_gestionar_reservas_sucursal.services.reservas import expire
             def run():
@@ -104,6 +137,8 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
             application.state.access_tokens.clear()
             if engine is not None:
                 engine.dispose()
+            if platform_engine is not None:
+                platform_engine.dispose()
 
     application = FastAPI(title="FashionStore API", version="1.0.0", lifespan=lifespan)
     register_handlers(application)
@@ -113,12 +148,28 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
         config = request.app.state.settings
         if config.multitenant_enabled and request.url.path.startswith("/api/"):
             path = request.url.path
-            allowed_auth = path in {"/api/auth/login", "/api/auth/login/admin",
-                                    "/api/auth/login/cliente", "/api/auth/me", "/api/auth/logout"}
-            allowed_cu09 = any(path == prefix or path.startswith(prefix + "/")
-                               for prefix in ("/api/admin/ciudades", "/api/admin/sucursales"))
-            if not (allowed_auth or allowed_cu09):
-                return error_response(503, "modulo_pendiente", "Módulo pendiente de aislamiento por empresa")
+            if path not in AUTH_PATHS:
+                enabled = config.enabled_tenant_modules
+                allowed = any(
+                    path == prefix or path.startswith(prefix + "/")
+                    for module in enabled
+                    for prefix in MODULE_PREFIXES.get(module, ())
+                )
+                if allowed and path.startswith("/api/admin/caja/") and "cu24" in enabled:
+                    # `Venta.claveoperacion` and its two-step mutations belong
+                    # to the legacy schema. Only tenant-scoped reads are exposed
+                    # here; POST /api/sync/lote is the SaaS offline-sale path.
+                    safe_reads = {
+                        "/api/admin/caja/referencias",
+                        "/api/admin/caja/productos",
+                        "/api/admin/caja/clientes",
+                    }
+                    allowed = request.method == "GET" and (
+                        path in safe_reads or path.startswith("/api/admin/caja/productos/")
+                    )
+                if not allowed:
+                    return error_response(503, "modulo_pendiente",
+                                          "Módulo pendiente de aislamiento por empresa")
         origin = request.headers.get("origin")
         is_auth = request.url.path.startswith("/api/auth/")
         is_cu05 = any(request.url.path == prefix or request.url.path.startswith(prefix + "/")
@@ -134,7 +185,10 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
         is_cu15_admin = request.url.path == "/api/admin/historial-compras" or request.url.path.startswith("/api/admin/historial-compras/")
         is_inventario_productos = any(request.url.path == prefix or request.url.path.startswith(prefix + '/')
                                      for prefix in ('/api/admin/catalogo', '/api/admin/proveedores', '/api/admin/inventario', '/api/admin/promociones', '/api/admin/reservas-sucursal', '/api/admin/devoluciones', '/api/admin/caja', '/api/admin/reportes'))
-        protected = is_auth or is_cu05 or is_cu06 or is_cu07 or is_cu08 or is_cu09 or is_catalogo or is_cliente or is_cu15_admin or is_inventario_productos
+        is_sync = request.url.path == '/api/sync' or request.url.path.startswith('/api/sync/')
+        is_saas = request.url.path == '/api/saas' or request.url.path.startswith('/api/saas/')
+        protected = (is_auth or is_cu05 or is_cu06 or is_cu07 or is_cu08 or is_cu09 or is_catalogo
+                     or is_cliente or is_cu15_admin or is_inventario_productos or is_sync or is_saas)
         # Nativo móvil: Authorization Bearer sin cookie no usa defensa CSRF de
         # cookie (el token no se adjunta automáticamente). Con cookie presente
         # se mantiene Origin + cabecera; cookie+bearer se rechaza en dependencias.
@@ -149,7 +203,7 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
                 return error_response(403, "origen_no_permitido", "Solicitud no permitida")
             response = Response(status_code=204)
             response.headers["Access-Control-Allow-Methods"] = (
-                "GET, POST, PUT, DELETE, OPTIONS" if is_inventario_productos else
+                "GET, POST, PUT, PATCH, DELETE, OPTIONS" if is_inventario_productos or is_saas or is_sync else
                 "GET, OPTIONS" if is_cu08 or is_cu15_admin else
                 "GET, POST, PATCH, PUT, OPTIONS" if is_cu06 else
                 "GET, POST, PATCH, DELETE, OPTIONS" if is_cliente else
@@ -204,6 +258,8 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
     application.include_router(cu23_router)
     application.include_router(cu24_router)
     application.include_router(cu25_router)
+    application.include_router(saas_router)
+    application.include_router(sync_router)
     return application
 
 

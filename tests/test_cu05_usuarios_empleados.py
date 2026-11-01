@@ -351,6 +351,7 @@ def test_csrf_and_cors(client, operator, payload, employee):
 
 def test_models_match_official_schema_without_postgresql_connection():
     ddl = str(CreateTable(Empleado.__table__).compile(dialect=postgresql.dialect()))
+    assert "idemp INTEGER" in ddl
     assert "cod_emp VARCHAR(10) NOT NULL" in ddl and "cargo VARCHAR(50) NOT NULL" in ddl
     assert "UNIQUE" not in ddl and ddl.count("ON DELETE CASCADE ON UPDATE CASCADE") == 2
     # CU09 usa IDENTITY para ciudades; no hay asignación manual obligatoria.
