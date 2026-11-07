@@ -2,11 +2,11 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from app.core.database import get_db
 from app.modules.inventario_productos.shared.operaciones_access import access
 from app.modules.inventario_productos.shared.operaciones_referencias import add_references, peer
-from app.modules.inventario_productos.cu23_gestionar_devoluciones.services import devoluciones
-from app.modules.inventario_productos.cu23_gestionar_devoluciones.schemas.devoluciones import ReturnInput, ReturnDecision, PolicyInput
+from ..services import devoluciones
+from ..schemas.devoluciones import ReturnInput, ReturnDecision, PolicyInput
 from sqlalchemy import select
 from app.core.errors import DomainError
-from app.modules.inventario_productos.cu23_gestionar_devoluciones.models.devoluciones import PoliticaDevolucion
+from ..models.devoluciones import PoliticaDevolucion
 
 router = APIRouter(prefix='/api/admin/devoluciones', tags=['CU23'])
 a23 = access('CU23')

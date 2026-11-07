@@ -62,7 +62,7 @@ class RestablecerContrasena(PublicInput):
 
 class UsuarioResponse(BaseModel):
     idUsuario: str
-    tipo: Literal["A", "C", "E"]
+    tipo: Literal["A", "C", "E", "S"]
     nombre: str | None = Field(validation_alias=AliasChoices("nombre", "nombres"), serialization_alias="nombres")
     correo: str
 

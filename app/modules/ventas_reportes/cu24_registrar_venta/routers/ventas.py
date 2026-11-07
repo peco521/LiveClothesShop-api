@@ -2,8 +2,8 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from app.core.database import get_db
 from app.modules.inventario_productos.shared.operaciones_access import access
 from app.modules.inventario_productos.shared.operaciones_referencias import add_references, peer
-from app.modules.inventario_productos.cu24_registrar_venta.services import ventas
-from app.modules.inventario_productos.cu24_registrar_venta.schemas.ventas import SaleInput, CashInput, ElectronicInput
+from app.modules.ventas_reportes.cu24_registrar_venta.services import ventas
+from app.modules.ventas_reportes.cu24_registrar_venta.schemas.ventas import SaleInput, CashInput, ElectronicInput
 from app.modules.seguridad_accesos.cu07_clientes.schemas.cliente import ClienteCrear
 from sqlalchemy import select
 from app.modules.cliente_experiencia_compra.cu14_pago_electronico.services import checkout_stripe

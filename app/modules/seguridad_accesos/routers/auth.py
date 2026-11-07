@@ -52,6 +52,11 @@ def admin_login(data: Login, request: Request, response: Response, db: Session =
     return _login(data, request, response, db, allowed_types={"A", "E"})
 
 
+@router.post("/login/saas", response_model=AuthResponse)
+def saas_login(data: Login, request: Request, response: Response, db: Session = Depends(get_db)):
+    return _login(data, request, response, db, allowed_types={"S"})
+
+
 def _session_cookie(response: Response, settings, credential: str) -> None:
     # Misma sesión para login y registro: cookie HttpOnly, path /api y duración de sesión.
     response.set_cookie(settings.cookie_name, credential, httponly=True,

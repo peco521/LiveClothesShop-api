@@ -2,8 +2,8 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from app.core.database import get_db
 from app.modules.inventario_productos.shared.operaciones_access import access
 from app.modules.inventario_productos.shared.operaciones_referencias import add_references, peer
-from app.modules.inventario_productos.cu22_gestionar_reservas_sucursal.services import reservas
-from app.modules.inventario_productos.cu22_gestionar_reservas_sucursal.schemas.reservas import ReservationAction
+from ..services import reservas
+from ..schemas.reservas import ReservationAction
 from typing import Literal
 
 

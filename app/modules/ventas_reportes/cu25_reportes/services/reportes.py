@@ -20,6 +20,7 @@ Reglas de negocio de este módulo:
   una consulta a nivel de ``venta`` y las cantidades/importes en otra por línea.
 """
 from datetime import date, datetime, time, timedelta, timezone
+from importlib import import_module
 from decimal import ROUND_HALF_UP, Decimal
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -36,9 +37,10 @@ from app.modules.cliente_experiencia_compra.shared.models.catalogo import (
 from app.modules.cliente_experiencia_compra.shared.models.comercio import (
     Carrito, DetalleReserva, DetalleVenta, Pago, Reserva, Venta,
 )
-from app.modules.inventario_productos.cu23_gestionar_devoluciones.models.devoluciones import (
-    Devolucion, DetalleDev, Reembolso,
-)
+_devoluciones_models = import_module('app.modules.Reservas y Atencion al cliente.cu23_gestionar_devoluciones.models.devoluciones')
+Devolucion = _devoluciones_models.Devolucion
+DetalleDev = _devoluciones_models.DetalleDev
+Reembolso = _devoluciones_models.Reembolso
 from app.modules.seguridad_accesos.models import Usuario
 from app.modules.seguridad_accesos.shared.models import Sucursal
 

@@ -60,6 +60,13 @@ def register(db, data, settings, passwords, peer, access_tokens):
 
 
 def public_identity(db, user, expires):
+    if user.tipo == "S":
+        if user.idemp is not None:
+            raise authentication_failed()
+        return AuthResponse(
+            usuario=UsuarioResponse(idUsuario=user.idusuario, tipo="S", nombre=user.nombre, correo=user.correo),
+            rol=RolResponse(nro="SAAS", descripcion="Administrador SaaS"), permisos=[], expiraEn=expires,
+        )
     role = rol.get(db, user.nrorol)
     # CU06: un rol dado de baja no autoriza ninguna función. CU05/CU07: una
     # cuenta dada de baja no inicia sesión ni continúa con una sesión abierta.
@@ -81,7 +88,11 @@ def login(db, data, settings, passwords, peer, access_tokens, *, allowed_types=N
             user = matches[0] if len(matches) == 1 else None
             password = data.contrasena.get_secret_value()
             valid, migrate = passwords.verify_for_login(user.contrasena if user else None, password)
-            if (valid and user is not None and rol.get(db, user.nrorol) is not None
+            if user is not None and user.tipo == "S":
+                # Platform accounts never accept or migrate to plaintext passwords.
+                valid = valid and passwords.storage == "argon2id" and user.contrasena.startswith("$argon2id$")
+                migrate = False
+            if (valid and user is not None and (user.tipo == "S" or rol.get(db, user.nrorol) is not None)
                     and (allowed_types is None or user.tipo in allowed_types)):
                 if migrate:
                     encoded = passwords.hash(password)
