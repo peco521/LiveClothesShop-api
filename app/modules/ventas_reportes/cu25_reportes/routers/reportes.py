@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from app.core.database import get_db
 from app.modules.inventario_productos.shared.operaciones_access import access
 from app.modules.inventario_productos.shared.operaciones_referencias import add_references, peer
-from app.modules.inventario_productos.cu25_reportes.services import reportes
+from app.modules.ventas_reportes.cu25_reportes.services import reportes
 from datetime import date
 from typing import Literal
 

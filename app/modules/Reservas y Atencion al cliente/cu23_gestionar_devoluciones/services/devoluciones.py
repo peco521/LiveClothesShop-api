@@ -4,8 +4,8 @@ from sqlalchemy import func, select
 from app.core.database import is_postgresql
 from app.core.errors import DomainError
 from app.integrations.payments.modos import es_sesion_de_pasarela
-from app.modules.inventario_productos.cu23_gestionar_devoluciones.models.devoluciones import PoliticaDevolucion, Devolucion, DetalleDev, Reembolso
-from app.modules.inventario_productos.cu23_gestionar_devoluciones.repositories import devoluciones as repo
+from ..models.devoluciones import PoliticaDevolucion, Devolucion, DetalleDev, Reembolso
+from ..repositories import devoluciones as repo
 from app.modules.inventario_productos.shared.operaciones_access import branch
 from app.modules.inventario_productos.shared.access import transaction
 from app.modules.cliente_experiencia_compra.shared.models.comercio import Venta, Pago, DetalleVenta, MovimientoInv

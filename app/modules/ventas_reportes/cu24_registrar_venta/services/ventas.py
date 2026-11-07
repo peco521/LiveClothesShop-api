@@ -2,6 +2,7 @@ import secrets
 from datetime import date
 from decimal import Decimal
 from uuid import uuid4
+from importlib import import_module
 from sqlalchemy import or_, select
 from app.core.errors import DomainError
 from app.modules.inventario_productos.shared.operaciones_access import branch
@@ -14,7 +15,7 @@ from app.modules.cliente_experiencia_compra.shared.models.comercio import Venta,
 from app.modules.cliente_experiencia_compra.shared.repositories import comercio, catalogo
 from app.modules.cliente_experiencia_compra.shared.services.precios import moneda, descuento_unitario
 from app.modules.cliente_experiencia_compra.cu11_gestionar_reserva.repositories import reserva as variants
-from app.modules.inventario_productos.cu22_gestionar_reservas_sucursal.services import reservas
+reservas = import_module('app.modules.Reservas y Atencion al cliente.cu22_gestionar_reservas_sucursal.services.reservas')
 from app.modules.cliente_experiencia_compra.cu13_compra_digital.services.compra import _vista
 from app.modules.cliente_experiencia_compra.cu14_pago_electronico.services import pago as payments, checkout_stripe
 from app.modules.cliente_experiencia_compra.cu14_pago_electronico.schemas.pago import PagoCrear

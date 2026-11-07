@@ -12,7 +12,7 @@ class Usuario(Base):
     __mapper_args__ = {"eager_defaults": False}
     __table_args__ = (
         CheckConstraint("sexo IN ('M', 'F')"),
-        CheckConstraint("tipo IN ('E', 'A', 'C')"),
+        CheckConstraint("tipo IN ('E', 'A', 'C', 'S')"),
     )
 
     idusuario: Mapped[str] = mapped_column(String, primary_key=True)
@@ -29,6 +29,7 @@ class Usuario(Base):
     contrasena: Mapped[str] = mapped_column(Text)
     fechanac: Mapped[date] = mapped_column(Date)
     tipo: Mapped[str] = mapped_column(String(1))
+    idemp: Mapped[int | None] = mapped_column(Integer, nullable=True)
     nrorol: Mapped[str] = mapped_column(ForeignKey("rol.nro", onupdate="CASCADE", ondelete="RESTRICT"))
 
 

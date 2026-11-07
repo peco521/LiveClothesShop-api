@@ -1,4 +1,6 @@
 from contextlib import asynccontextmanager
+from importlib import import_module
+from importlib import import_module
 import asyncio
 import logging
 
@@ -36,12 +38,12 @@ from app.integrations.gmail import configured_gmail_delivery
 from app.integrations.payments.stripe_checkout import StripeCheckout
 from app.modules.cliente_experiencia_compra.cu14_pago_electronico.routers.stripe import router as stripe_router
 from app.modules.inventario_productos.CU21_gestionar_promo_desc.routers.promociones import router as cu21_router
-from app.modules.inventario_productos.cu22_gestionar_reservas_sucursal.routers.reservas import router as cu22_router
-from app.modules.inventario_productos.cu23_gestionar_devoluciones.routers.devoluciones import router as cu23_router
-from app.modules.inventario_productos.cu24_registrar_venta.routers.ventas import router as cu24_router
-from app.modules.inventario_productos.cu25_reportes.routers.reportes import router as cu25_router
-from app.modules.plataforma_saas.routers import router as saas_router
+cu22_router = import_module('app.modules.Reservas y Atencion al cliente.cu22_gestionar_reservas_sucursal.routers.reservas').router
+cu23_router = import_module('app.modules.Reservas y Atencion al cliente.cu23_gestionar_devoluciones.routers.devoluciones').router
+from app.modules.ventas_reportes.cu24_registrar_venta.routers.ventas import router as cu24_router
+from app.modules.ventas_reportes.cu25_reportes.routers.reportes import router as cu25_router
 from app.modules.sincronizacion.routers import router as sync_router
+from app.modules.saas_suscripciones.planes_funcionalidades.routers.planes import router as saas_planes_router
 
 
 # Rutas de /api que ya estan aisladas por empresa y verificadas. Un modulo que
@@ -109,7 +111,7 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
                 config.platform_database_url.get_secret_value())
         application.state.platform_session_factory = platform_factory
         async def expire_reservations():
-            from app.modules.inventario_productos.cu22_gestionar_reservas_sucursal.services.reservas import expire
+            expire = import_module('app.modules.Reservas y Atencion al cliente.cu22_gestionar_reservas_sucursal.services.reservas').expire
             def run():
                 with factory() as db:
                     expire(db)
@@ -258,7 +260,7 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
     application.include_router(cu23_router)
     application.include_router(cu24_router)
     application.include_router(cu25_router)
-    application.include_router(saas_router)
+    application.include_router(saas_planes_router)
     application.include_router(sync_router)
     return application
 
