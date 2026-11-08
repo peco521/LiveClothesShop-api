@@ -3,7 +3,7 @@ from app.core.database import get_db
 from app.modules.inventario_productos.shared.operaciones_access import access
 from app.modules.inventario_productos.shared.operaciones_referencias import add_references, peer
 from ..services import devoluciones
-from ..schemas.devoluciones import ReturnInput, ReturnDecision, PolicyInput
+from ..schemas.devoluciones import ExchangeInput, ReturnInput, ReturnDecision, PolicyInput
 from sqlalchemy import select
 from app.core.errors import DomainError
 from ..models.devoluciones import PoliticaDevolucion
@@ -33,6 +33,11 @@ def return_sale(nro: int, db=Depends(get_db), actor=Depends(a23)):
     return result
 
 
+@router.get('/ventas/{nro}/variantes')
+def exchange_variants(nro: int, db=Depends(get_db), actor=Depends(a23)):
+    return devoluciones.exchange_variants(db, nro, actor[1])
+
+
 @router.get('')
 def return_list(offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=100), db=Depends(get_db), actor=Depends(a23)):
     return devoluciones.listing(db, actor[1], offset, limit)
@@ -41,6 +46,11 @@ def return_list(offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=10
 @router.post('', status_code=201)
 def return_create(data: ReturnInput, request: Request, db=Depends(get_db), actor=Depends(a23)):
     return devoluciones.create(db, data, actor[0], actor[1], peer(request))
+
+
+@router.post('/cambios', status_code=201)
+def return_exchange(data: ExchangeInput, request: Request, db=Depends(get_db), actor=Depends(a23)):
+    return devoluciones.create_exchange(db, data, actor[0], actor[1], peer(request))
 
 
 @router.post('/{nro}/decision')

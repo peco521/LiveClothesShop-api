@@ -11,6 +11,7 @@ from datetime import date
 from decimal import Decimal
 
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import text
 
 from app.core.errors import DomainError
 from app.integrations.payments.protocolo import ResultadoPasarela, TimeoutPasarela
@@ -25,6 +26,22 @@ from app.modules.cliente_experiencia_compra.cu14_pago_electronico.schemas.pago i
 from app.modules.cliente_experiencia_compra.shared.models.comercio import MovimientoInv, Pago
 from app.modules.cliente_experiencia_compra.shared.repositories import comercio as comercio_repo
 from app.modules.seguridad_accesos.services.bitacora import record
+
+
+def _exchange_for_sale(db, nro_venta, *, lock=False):
+    if db.info.get("multitenant") is not True:
+        return None
+    tenant = db.info.get("idemp")
+    if tenant is None:
+        return None
+    suffix = " FOR UPDATE" if lock else ""
+    return db.execute(
+        text(
+            "SELECT nroCambio, estado, difMonto FROM cambio "
+            "WHERE idEmp = :tenant AND nroVentaNueva = :sale" + suffix
+        ),
+        {"tenant": tenant, "sale": nro_venta},
+    ).mappings().one_or_none()
 
 
 @contextmanager
@@ -63,6 +80,16 @@ def iniciar(db, data: PagoCrear, user_id: str, peer, pasarela, environment: str)
         venta = repository.locked_venta(db, data.nroVenta)
         if venta is None or venta.idusuariocl != user_id:
             raise DomainError(404, "venta_no_encontrada", "Venta no encontrada")
+        exchange = _exchange_for_sale(db, venta.nroventa, lock=True)
+        if db.info.get("multitenant") is True and venta.idcarrito is None:
+            if (
+                exchange is None
+                or exchange["estado"] != "pendiente"
+                or exchange["difmonto"] <= 0
+                or venta.total != exchange["difmonto"]
+            ):
+                raise DomainError(409, "venta_no_pagable",
+                                  "Esta venta no corresponde a una diferencia pendiente de cambio")
         if venta.estado != "registrada":
             raise DomainError(409, "venta_no_pagable", "La venta ya no puede pagarse")
         for previo in repository.pagos_de_venta(db, venta.nroventa):
@@ -73,7 +100,7 @@ def iniciar(db, data: PagoCrear, user_id: str, peer, pasarela, environment: str)
         pago = repository.add_pago(db, Pago(
             metodo=data.metodo, monto=venta.total, estado="pendiente",
             referencia=None, nroventa=venta.nroventa))
-        record(db, "pago_iniciado", user_id, peer, True)
+        record(db, "pago_iniciado", user_id, peer, True, resource_id=str(pago.idpago))
         snapshot = (pago.idpago, venta.total, data.metodo, venta.nroventa, data.escenario)
     resultado = _cobrar(pasarela, snapshot)
     with transaction(db):
@@ -136,31 +163,34 @@ def _finalizar(db, id_pago: int, user_id: str, peer, resultado: ResultadoPasarel
     if pago.estado != "pendiente" or venta.estado != "registrada":
         # Doble aprobación/callback: ya resuelto, sin tocar inventario.
         return _vista(db, pago), False
-    if resultado is None:
+    if resultado is None or getattr(resultado,'estado',None) not in {'aprobado','rechazado'}:
         # Timeout/error sin certeza: el pago queda pendiente, reconciliable.
         # No se convierte a rechazado automáticamente.
         return _vista(db, pago), True
     if resultado.estado == "rechazado":
         pago.estado = "rechazado"
         pago.referencia = resultado.referencia if resultado else None
-        venta.estado = "anulada"
-        record(db, "pago_rechazado", user_id, peer, True)
-        record(db, "venta_anulada", user_id, peer, True)
+        exchange = _exchange_for_sale(db, venta.nroventa)
+        record(db, "pago_rechazado", user_id, peer, True, resource_id=str(pago.idpago))
+        if exchange is None:
+            venta.estado = "anulada"
+            record(db, "venta_anulada", user_id, peer, True)
         return _vista(db, pago), True
     # Autorizado por la pasarela: confirmar stock ANTES de persistir aprobado.
     _descontar(db, venta, user_id, peer)
     pago.estado = "aprobado"
     pago.referencia = resultado.referencia
-    record(db, "pago_aprobado", user_id, peer, True)
+    record(db, "pago_aprobado", user_id, peer, True, resource_id=str(pago.idpago))
     return _vista(db, pago), True
 
 
 def _descontar(db, venta, user_id: str, peer):
+    if _exchange_for_sale(db, venta.nroventa) is not None:
+        return
     # Reserva del cliente: al cobrar se libera lo reservado y la reserva queda
     # atendida. Sólo aplica a ventas de caja con nroReserva (el carrito no reserva).
     comercio_repo.entregar_reserva(db, venta)
-    presencial = venta.idcarrito is None and venta.claveoperacion is not None
-    presencial = venta.idcarrito is None and venta.claveoperacion is not None
+    presencial = db.info.get('multitenant') is not True and venta.idcarrito is None and venta.claveoperacion is not None
     cart = None if presencial else carrito_repo.locked_active_cart(db, user_id)
     if not presencial and (cart is None or cart.idcarrito != venta.idcarrito):
         # El carrito ya no está activo para esta venta: conflicto, sin descuento.

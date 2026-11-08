@@ -1,6 +1,6 @@
-from decimal import Decimal
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -13,29 +13,22 @@ from app.modules.cliente_experiencia_compra.cu10_consultar_prendas.schemas.catal
 from app.modules.cliente_experiencia_compra.cu10_consultar_prendas.services import catalogo
 from app.modules.cliente_experiencia_compra.shared.dependencies import require_cliente
 
+def catalog_session(request: Request, identity=Depends(require_cliente)):
+    # CU10 is not a public storefront. The login resolves the company and the
+    # authenticated session fixes it; selectors here must never override it.
+    if (any(key in request.query_params for key in ("empresa", "idEmp", "idemp", "tenant"))
+            or any(key in request.headers for key in ("x-empresa", "x-idemp", "x-tenant-id"))):
+        raise DomainError(422, "datos_invalidos", "Los datos enviados no son válidos")
+    return identity
+
+
 router = APIRouter(prefix="/api/catalogo", tags=["Catálogo"],
-                   dependencies=[Depends(require_cliente)])
+                   dependencies=[Depends(catalog_session)])
 
 
 @router.get("/productos", response_model=ProductosListado)
-def list_products(offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=100),
-                  q: str = Query("", max_length=100),
-                  idCat: int | None = Query(None, ge=1),
-                  idMarca: int | None = Query(None, ge=1),
-                  idCol: int | None = Query(None, ge=1),
-                  idTemp: int | None = Query(None, ge=1),
-                  idTalla: int | None = Query(None),
-                  idColor: int | None = Query(None),
-                  minPrecio: Decimal | None = Query(None, ge=0),
-                  maxPrecio: Decimal | None = Query(None, ge=0),
-                  soloDisponibles: bool = Query(False),
-                  sort: str = Query("nombre_asc", pattern="^(nombre_asc|nombre_desc|precio_asc|precio_desc)$"),
+def list_products(filters: Annotated[CatalogoFiltros, Query()],
                   db: Session = Depends(get_db)):
-    filters = CatalogoFiltros(offset=offset, limit=limit, q=q.strip(),
-                              idCat=idCat, idMarca=idMarca, idCol=idCol, idTemp=idTemp,
-                              idTalla=idTalla, idColor=idColor,
-                              minPrecio=minPrecio, maxPrecio=maxPrecio,
-                              soloDisponibles=soloDisponibles, sort=sort)  # type: ignore[arg-type]
     return catalogo.list_products(db, filters)
 
 

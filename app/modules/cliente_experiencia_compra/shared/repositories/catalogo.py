@@ -1,6 +1,7 @@
 """Consultas de lectura del catálogo (CU10, solo lectura, sin N+1)."""
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.orm import with_loader_criteria
 
 from app.modules.cliente_experiencia_compra.shared.models.catalogo import (
     Categoria,
@@ -17,6 +18,22 @@ from app.modules.cliente_experiencia_compra.shared.models.catalogo import (
     VarianteProd,
 )
 from app.modules.seguridad_accesos.shared.models import Ciudad, Sucursal
+
+
+def _scoped(db, query):
+    """Apply session tenant to every ORM occurrence, including JOIN ON/subqueries.
+
+    RLS remains a second boundary, not a substitute for repository isolation.
+    No client-controlled selector or privileged connection is used here.
+    """
+    if db.info.get("multitenant") is True:
+        tenant = db.info.get("idemp") or 0
+        for model in (Producto, Marca, Categoria, Coleccion, Promocion, VarianteProd,
+                      Talla, Color, VarianteColor, Inventario, TempColeccion,
+                      Temporada, Sucursal, Ciudad):
+            query = query.options(with_loader_criteria(model, model.idemp == tenant,
+                                                       include_aliases=True))
+    return query
 
 
 def _variant_scope(product_col=None):
@@ -90,10 +107,11 @@ def list_products(db, *, q="", idCat=None, idMarca=None, idCol=None, idTemp=None
             .outerjoin(Promocion, Promocion.idpromo == Producto.idpromo)
             .where(*conditions))
 
-    total = db.scalar(select(func.count()).select_from(Producto)
+    total = db.scalar(_scoped(db, select(func.count()).select_from(Producto)
                       .join(Marca, Marca.idmarca == Producto.idmarca)
                       .join(Categoria, Categoria.idcat == Producto.idcat)
-                      .where(*conditions)) or 0
+                      .join(Coleccion, Coleccion.idcol == Producto.idcol)
+                      .where(*conditions))) or 0
 
     price_min = (select(func.min(VarianteProd.precio))
                  .where(VarianteProd.idprod == Producto.idprod,
@@ -108,26 +126,26 @@ def list_products(db, *, q="", idCat=None, idMarca=None, idCol=None, idTemp=None
     else:
         base = base.order_by(Producto.descripcion.asc(), Producto.idprod)
 
-    rows = list(db.execute(base.offset(offset).limit(limit)).all())
+    rows = list(db.execute(_scoped(db, base.offset(offset).limit(limit))).all())
     return rows, total
 
 
 def product_variants(db, product_ids):
     if not product_ids:
         return []
-    return list(db.scalars(select(VarianteProd)
+    return list(db.scalars(_scoped(db, select(VarianteProd)
                            .where(VarianteProd.idprod.in_(product_ids),
                                   VarianteProd.estado == "activo")
-                           .order_by(VarianteProd.precio, VarianteProd.idvariante)).all())
+                           .order_by(VarianteProd.precio, VarianteProd.idvariante))).all())
 
 
 def variant_colors(db, variant_ids):
     if not variant_ids:
         return {}
-    rows = db.execute(select(VarianteColor.idvar, Color)
+    rows = db.execute(_scoped(db, select(VarianteColor.idvar, Color)
                       .join(Color, Color.idcolor == VarianteColor.idcolor)
                       .where(VarianteColor.idvar.in_(variant_ids))
-                      .order_by(Color.descripcion)).all()
+                      .order_by(Color.descripcion))).all()
     grouped: dict[str, list] = {}
     for var_id, color in rows:
         grouped.setdefault(var_id, []).append(color)
@@ -137,7 +155,7 @@ def variant_colors(db, variant_ids):
 def tallas_map(db, talla_ids):
     if not talla_ids:
         return {}
-    rows = db.scalars(select(Talla).where(Talla.idtalla.in_(talla_ids))).all()
+    rows = db.scalars(_scoped(db, select(Talla).where(Talla.idtalla.in_(talla_ids)))).all()
     return {row.idtalla: row for row in rows}
 
 
@@ -145,56 +163,56 @@ def availability_totals(db, product_ids):
     """Suma de cantDisp por producto (solo sucursales activas y variantes activas)."""
     if not product_ids:
         return {}
-    rows = db.execute(select(VarianteProd.idprod, func.coalesce(func.sum(Inventario.cantdisp), 0))
-                      .outerjoin(Inventario, (Inventario.idvar == VarianteProd.idvariante))
-                      .outerjoin(Sucursal, (Sucursal.nro == Inventario.nrosuc) & (Sucursal.estado == "activo"))
+    rows = db.execute(_scoped(db, select(VarianteProd.idprod, func.coalesce(func.sum(Inventario.cantdisp), 0))
+                      .join(Inventario, (Inventario.idvar == VarianteProd.idvariante))
+                      .join(Sucursal, (Sucursal.nro == Inventario.nrosuc) & (Sucursal.estado == "activo"))
                       .where(VarianteProd.idprod.in_(product_ids),
                              VarianteProd.estado == "activo")
-                      .group_by(VarianteProd.idprod)).all()
+                      .group_by(VarianteProd.idprod))).all()
     return {pid: int(total or 0) for pid, total in rows}
 
 
 def get_product(db, idProd):
-    return db.execute(select(Producto, Marca, Categoria, Coleccion, Promocion)
+    return db.execute(_scoped(db, select(Producto, Marca, Categoria, Coleccion, Promocion)
                       .join(Marca, Marca.idmarca == Producto.idmarca)
                       .join(Categoria, Categoria.idcat == Producto.idcat)
                       .join(Coleccion, Coleccion.idcol == Producto.idcol)
                       .outerjoin(Promocion, Promocion.idpromo == Producto.idpromo)
-                      .where(Producto.idprod == idProd)).first()
+                      .where(Producto.idprod == idProd))).first()
 
 
 def availability_by_branch(db, variant_ids):
     if not variant_ids:
         return []
-    return list(db.execute(select(Inventario, Sucursal, Ciudad)
+    return list(db.execute(_scoped(db, select(Inventario, Sucursal, Ciudad)
                            .join(Sucursal, Sucursal.nro == Inventario.nrosuc)
                            .join(Ciudad, Ciudad.id == Sucursal.idciud)
                            .where(Inventario.idvar.in_(variant_ids),
                                   Sucursal.estado == "activo")
-                           .order_by(Ciudad.nombre, Sucursal.nombre, Inventario.idvar)).all())
+                           .order_by(Ciudad.nombre, Sucursal.nombre, Inventario.idvar))).all())
 
 
 def category_brands(db, category_id):
     """Marcas activas vinculadas a prendas activas de la categoría, sin duplicados."""
-    return list(db.scalars(select(Marca).where(
+    return list(db.scalars(_scoped(db, select(Marca).where(
         Marca.estado == "activo",
         select(Producto.idprod).where(
             Producto.idmarca == Marca.idmarca,
             Producto.idcat == category_id,
             Producto.estado == "activo").exists(),
-    ).order_by(Marca.nombre, Marca.idmarca)).all())
+    ).order_by(Marca.nombre, Marca.idmarca))).all())
 
 
 def facets(db):
     """Listas de referencia para los filtros del catálogo (solo lectura)."""
     return {
-        "categorias": list(db.scalars(select(Categoria).order_by(Categoria.descripcion, Categoria.idcat)).all()),
-        "marcas": list(db.scalars(select(Marca).where(Marca.estado == "activo")
-                                  .order_by(Marca.nombre, Marca.idmarca)).all()),
-        "colecciones": list(db.scalars(select(Coleccion).order_by(Coleccion.descripcion, Coleccion.idcol)).all()),
-        "temporadas": list(db.scalars(select(Temporada).order_by(Temporada.nombre, Temporada.idtemp)).all()),
-        "tallas": list(db.scalars(select(Talla).order_by(Talla.idtalla)).all()),
-        "colores": list(db.scalars(select(Color).order_by(Color.descripcion, Color.idcolor)).all()),
+        "categorias": list(db.scalars(_scoped(db, select(Categoria).order_by(Categoria.descripcion, Categoria.idcat))).all()),
+        "marcas": list(db.scalars(_scoped(db, select(Marca).where(Marca.estado == "activo")
+                                  .order_by(Marca.nombre, Marca.idmarca))).all()),
+        "colecciones": list(db.scalars(_scoped(db, select(Coleccion).order_by(Coleccion.descripcion, Coleccion.idcol))).all()),
+        "temporadas": list(db.scalars(_scoped(db, select(Temporada).order_by(Temporada.nombre, Temporada.idtemp))).all()),
+        "tallas": list(db.scalars(_scoped(db, select(Talla).order_by(Talla.idtalla))).all()),
+        "colores": list(db.scalars(_scoped(db, select(Color).order_by(Color.descripcion, Color.idcolor))).all()),
     }
 
 
@@ -203,8 +221,8 @@ def promociones(db, ids):
     ids = [i for i in set(ids) if i is not None]
     if not ids:
         return {}
-    rows = db.scalars(select(Promocion).where(Promocion.idpromo.in_(ids))).all()
+    rows = db.scalars(_scoped(db, select(Promocion).where(Promocion.idpromo.in_(ids)))).all()
     return {row.idpromo: row for row in rows}
 def get_variant(db, id_var: str):
-    return db.scalar(select(VarianteProd).where(
-        VarianteProd.idvariante == id_var, VarianteProd.estado == "activo"))
+    return db.scalar(_scoped(db, select(VarianteProd).where(
+        VarianteProd.idvariante == id_var, VarianteProd.estado == "activo")))

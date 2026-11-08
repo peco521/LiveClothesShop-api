@@ -27,9 +27,24 @@ Thumbs.db
 # Documentación y scripts locales de base de datos
 docs/
 database/
+!database/
+database/*
+!database/saas/
+database/saas/*
+!database/saas/00_preparar_postgres_pruebas.ps1
+!database/saas/01_FashionStore_SaaS_TABLAS.sql
+!database/saas/02_FashionStore_SaaS_TRIGGERS_PA.sql
+!database/saas/03_FashionStore_SaaS_Plataforma_Sync.sql
+!database/saas/04_FashionStore_SaaS_ROLES.sql
+!database/saas/05_verificacion_rls.sql
+!database/saas/06_sync_venta_auditoria.sql
+!database/saas/README.md
 tests/
 !tests/
 tests/*
 !tests/test_multitenant.py
 !tests/test_saas_postgres.py
-
+!tests/test_autonomo_ml.py
+!tests/test_autonomo_reportes.py
+!tests/test_autonomo_inventario.py
+!tests/test_autonomo_inventario_postgres.py

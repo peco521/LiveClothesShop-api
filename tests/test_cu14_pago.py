@@ -121,6 +121,26 @@ def test_no_autenticado_401(client, catalogo):
     assert client.get(f"{BASE}/1").status_code == 401
 
 
+def test_resultado_proveedor_desconocido_no_aprueba_ni_descuenta(client, customer, factory):
+    from types import SimpleNamespace
+    class UnknownProvider:
+        def cobrar(self, **kwargs):
+            return SimpleNamespace(estado='unknown', referencia='not-an-approval')
+    venta = comprar(client, [{"idVar": "v1", "cantidad": 1}])
+    before = inventario(factory)
+    original = client.app.state.pasarela
+    client.app.state.pasarela = UnknownProvider()
+    try:
+        response = client.post(BASE, json={"nroVenta": venta['nroVenta'], "metodo": "tarjeta"})
+        assert response.status_code == 201
+        assert response.json()['estado'] == 'pendiente'
+        assert response.json()['referencia'] is None
+        assert inventario(factory) == before
+        assert movimientos(factory) == []
+    finally:
+        client.app.state.pasarela = original
+
+
 def test_venta_ajena_404(client, customer, registration):
     venta = comprar(client, [{"idVar": "v1", "cantidad": 1}])
     assert client.post("/api/auth/registro",

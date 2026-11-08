@@ -25,20 +25,30 @@ def add(db, usuario):
 
 def registrar_cliente(db, *, user_id, ci, nombre, apellido_pat, apellido_mat,
                       sexo, correo, telefono, direccion, password_hash,
-                      fecha_nac, role_id, client_code):
-    db.execute(text("""
+                      fecha_nac, role_id, client_code, idemp: int | None = None):
+    procedure = ("""
+        CALL sp_registrar_cliente(
+          :idemp, :user_id, :ci, :nombre, :apellido_pat, :apellido_mat, :sexo,
+          :correo, :telefono, :direccion, :password_hash, :fecha_nac,
+          :role_id, :client_code
+        )
+    """ if idemp is not None else """
         CALL sp_registrar_cliente(
           :user_id, :ci, :nombre, :apellido_pat, :apellido_mat, :sexo,
           :correo, :telefono, :direccion, :password_hash, :fecha_nac,
           :role_id, :client_code
         )
-    """), {
+    """)
+    parameters = {
         "user_id": user_id, "ci": ci, "nombre": nombre,
         "apellido_pat": apellido_pat, "apellido_mat": apellido_mat,
         "sexo": sexo, "correo": correo, "telefono": telefono,
         "direccion": direccion, "password_hash": password_hash,
         "fecha_nac": fecha_nac, "role_id": role_id, "client_code": client_code,
-    })
+    }
+    if idemp is not None:
+        parameters["idemp"] = idemp
+    db.execute(text(procedure), parameters)
 
 
 def cambiar_contrasena(db, correo: str, password_hash: str):
@@ -47,7 +57,7 @@ def cambiar_contrasena(db, correo: str, password_hash: str):
     })
 
 
-def create_client(db, *, user_id, data, password_hash, role_id, client_code):
+def create_client(db, *, user_id, data, password_hash, role_id, client_code, idemp: int | None = None):
     """Crea usuario cliente y su perfil a partir de datos ya validados.
 
     Reutilizado por CU01 (registro público) y CU07 (alta administrativa): la
@@ -58,7 +68,8 @@ def create_client(db, *, user_id, data, password_hash, role_id, client_code):
                           apellido_pat=data.apellidoPat, apellido_mat=data.apellidoMat,
                           sexo=data.sexo, correo=str(data.correo), telefono=data.telefono,
                           direccion=data.direccion, password_hash=password_hash,
-                          fecha_nac=data.fechaNac, role_id=role_id, client_code=client_code)
+                          fecha_nac=data.fechaNac, role_id=role_id, client_code=client_code,
+                          idemp=idemp)
     else:
         # SQLite se conserva como sustituto de pruebas; la BD oficial
         # PostgreSQL usa el procedimiento almacenado anterior.

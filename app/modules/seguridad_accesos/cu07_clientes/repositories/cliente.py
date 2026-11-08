@@ -2,7 +2,6 @@ from sqlalchemy import func, or_, select
 
 from app.modules.seguridad_accesos.models import Admin, Cliente, Usuario
 from app.modules.seguridad_accesos.cu05_usuarios_empleados.models import Empleado
-from app.modules.seguridad_accesos.repositories import usuario
 
 
 def list_candidates(db, *, offset, limit, q):
@@ -10,6 +9,8 @@ def list_candidates(db, *, offset, limit, q):
     # The service rejects an inconsistent page instead of silently hiding rows.
     has_client = select(Cliente.idusuario).where(Cliente.idusuario == Usuario.idusuario).exists()
     filters = [or_(Usuario.tipo == "C", has_client)]
+    if db.info.get("multitenant") is True:
+        filters.append(Usuario.idemp == (db.info.get("idemp") or 0))
     if q:
         filters.append(or_(*(func.lower(field).contains(q.lower(), autoescape=True) for field in (
             Usuario.nombre, Usuario.apellidopat, Usuario.apellidomat, Usuario.correo, Usuario.ci))))
@@ -20,7 +21,12 @@ def list_candidates(db, *, offset, limit, q):
 
 
 def get(db, user_id, *, lock=False):
-    return usuario.locked(db, user_id) if lock else db.get(Usuario, user_id)
+    query = select(Usuario).where(Usuario.idusuario == user_id)
+    if db.info.get("multitenant") is True:
+        query = query.where(Usuario.idemp == (db.info.get("idemp") or 0))
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    return db.scalar(query)
 
 
 def profiles(db, user_id):

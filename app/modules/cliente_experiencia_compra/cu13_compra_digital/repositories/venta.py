@@ -3,35 +3,35 @@
 from sqlalchemy import select
 
 from app.modules.cliente_experiencia_compra.shared.models.comercio import DetalleVenta, Venta
+from app.modules.cliente_experiencia_compra.shared.repositories.tenant import scoped, insert_identity
 
 
 def registrada_por_carrito(db, idCarrito: int):
     """Venta registrada (pendiente de pago) vinculada al carrito, si existe."""
-    return db.scalar(select(Venta).where(Venta.idcarrito == idCarrito,
+    return db.scalar(scoped(db,select(Venta),Venta).where(Venta.idcarrito == idCarrito,
                                          Venta.estado == "registrada"))
 
 
 def locked_registrada_por_carrito(db, idCarrito: int):
-    query = (select(Venta).where(Venta.idcarrito == idCarrito,
+    query = (scoped(db,select(Venta),Venta).where(Venta.idcarrito == idCarrito,
                                  Venta.estado == "registrada")
              .with_for_update().execution_options(populate_existing=True))
     return db.scalar(query)
 
 
 def propia(db, nroVenta: int, user_id: str):
-    return db.scalar(select(Venta).where(Venta.nroventa == nroVenta,
+    return db.scalar(scoped(db,select(Venta),Venta).where(Venta.nroventa == nroVenta,
                                          Venta.idusuariocl == user_id))
 
 
 def detalles(db, nroVenta: int):
-    return list(db.scalars(select(DetalleVenta)
+    return list(db.scalars(scoped(db,select(DetalleVenta),DetalleVenta)
                            .where(DetalleVenta.nroventa == nroVenta)
                            .order_by(DetalleVenta.iddetalleventa)).all())
 
 
 def add_venta(db, row: Venta):
-    db.add(row)
-    db.flush()
+    row=insert_identity(db,row)
     db.refresh(row, attribute_names=["nroventa", "fechahora"])
     return row
 

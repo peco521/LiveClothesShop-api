@@ -21,7 +21,8 @@ def test_url() -> str:
     url = values.get("TEST_PLATFORM_DATABASE_URL", "")
     parsed = make_url(url)
     if (parsed.host != "127.0.0.1" or parsed.port != 55432
-            or parsed.database != "fashionstore_test"):
+            or parsed.database != "fashionstore_test"
+            or parsed.username != "fashionstore_provisioner"):
         raise SystemExit("La limpieza E2E solo permite fashionstore_test en 127.0.0.1:55432")
     return url
 
@@ -35,7 +36,7 @@ def main() -> None:
     if not ROLE_PATTERN.fullmatch(args.rol):
         raise SystemExit("Solo se permite limpiar un identificador temporal CU06 de Playwright")
 
-    engine = create_engine(test_url())
+    engine = create_engine(test_url(), hide_parameters=True)
     try:
         with engine.begin() as connection:
             connection.execute(text("""

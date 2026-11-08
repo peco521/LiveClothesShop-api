@@ -19,6 +19,151 @@ python -m venv .venv
 Para un entorno sin herramientas de prueba, instalar `requirements.txt`.
 El manifiesto conserva las dependencias preexistentes y añade Argon2id.
 
+### Entrega e instalación SaaS multitenant
+
+La fuente SQL canónica es [`database/saas/README.md`](database/saas/README.md).
+Incluye el orden 01–03 → migración
+[`001_versiones_planes.sql`](app/modules/saas_suscripciones/planes_funcionalidades/migrations/001_versiones_planes.sql)
+→ 04, el parche 06 de auditoría de ventas y la comprobación 05 de RLS.
+No copiar SQL desde el directorio histórico superior ni duplicar la migración.
+Los scripts de creación son para un esquema nuevo, no para reconstruir una base
+existente ni migrar datos legacy. En esta continuación solo está autorizado
+`127.0.0.1:55432/fashionstore_test`: no usar `-Recreate`, Supabase ni la base actual.
+
+El runner `.venv/Scripts/python.exe scripts/serve_test_api.py` valida el destino
+y los dos roles desde `../.local/backend.env`, sin mostrar credenciales. Las
+pruebas PostgreSQL leen el mismo archivo. `MULTITENANT_MODULES` permanece vacío
+por defecto: los permisos por sí solos no abren módulos pendientes.
+El runner local de regresión selecciona explícitamente
+`cu05,cu06,cu07,cu08,cu09,cu10,cu11,cu12,cu13,cu14,cu15,cu18,cu19,cu20,cu21,cu22,cu23,cu25,sync,saas,cu24`; esto no cambia la configuración
+predeterminada ni constituye habilitación de producción.
+
+CU13–15 reutilizan compra/pago/historial existentes con alcance tenant/propietario;
+solo pasarela `mock` fuera de producción, sin cargos. Stripe/webhooks SaaS siguen
+cerrados. CU18–21 habilitan catálogo, proveedores, inventario y promociones;
+imágenes externas no están habilitadas. CU25 solo abre reportes dinámicos nuevos,
+no consultas legacy sin alcance. Ver `../INFORME_AVANCE_AUTONOMO.md` para evidencia
+y criterios parciales, modelo local opcional y ML sintético.
+
+### CU08: consulta empresarial de solo lectura
+
+- API: `GET /api/admin/bitacora` y `GET /api/admin/bitacora/{id}`; sesión
+  empresarial y permiso **CU08** en el backend. Habilitación explícita: `cu08`
+  en `MULTITENANT_MODULES`, con `MULTITENANT_ENABLED=true`.
+- Angular: `/admin/bitacora` y `/admin/bitacora/:id`, pantallas existentes.
+- Filtros: `accion` (catálogo cerrado), `usuario_id` exacto, `desde`/`hasta`
+  ISO con zona; `offset >= 0`, `limit` de 1 a 100 (predeterminado 20).
+  Campos adicionales, incluido `idemp`, se rechazan con 422. La empresa se
+  obtiene de la sesión, nunca del cliente. El contrato no restringe por sucursal.
+- Listado y total comparten los mismos predicados tenant. Un ID ajeno devuelve
+  404; un filtro por actor ajeno devuelve cero resultados. Referencias históricas
+  a actores que no pertenecen a la empresa se muestran como `null`.
+- Campos: `id` string sin pérdida de bigint, `usuario_id`, `accion`, `fecha` UTC,
+  `ip` validada. El detalle agrega únicamente `detalles.resultado` validado;
+  referencias internas, contraseñas, tokens y payloads arbitrarios se omiten.
+  No hay POST/PUT/PATCH/DELETE ni auditoría adicional al consultar.
+- No confundir con `GET /api/saas/auditoria`: identidad/permisos de plataforma,
+  eventos `idemp IS NULL`, conexión separada. CU08 no los expone.
+- E2E: `npm run test:e2e -- --grep CU08 --reporter=list` desde web; dos empresas,
+  login real y evento visible en Angular. Se conservan esos eventos de login;
+  no se borra historia de auditoría para limpiar el escenario.
+
+### CU10: consulta de prendas de la empresa del cliente
+
+El contrato existente exige **cliente autenticado**, no un catálogo de visitantes.
+Antes de iniciar sesión se introduce el código `empresa` en
+`POST /api/auth/login/cliente`; `auth_resolver_empresa` lo valida en PostgreSQL.
+Una empresa ausente/inexistente no inicia sesión. No se crea un contexto público
+ni se admite un `idEmp` arbitrario. Cookie HttpOnly (web) o Bearer (móvil)
+transportan la sesión; el backend verifica tipo C, perfil Cliente, estado de
+cuenta/rol y vigencia empresarial. No se sustituye este contrato por permiso RBAC CU10.
+
+Rutas GET existentes, habilitables explícitamente con `cu10`:
+
+- `/api/catalogo/productos`: `q`, `idCat`, `idMarca`, `idCol`, `idTemp`, `idTalla`,
+  `idColor`, `minPrecio`, `maxPrecio`, `soloDisponibles`, `sort`, `offset`, `limit`.
+  `sort`: nombre/precio asc/desc; límite predeterminado 20, máximo 100.
+- `/api/catalogo/productos/{idProd}`: variantes y disponibilidad por sucursal.
+- `/api/catalogo/variantes/{idVar}`: detalle de la prenda de esa variante activa.
+- `/api/catalogo/{grupo}`: categorías, marcas, colecciones, temporadas, tallas,
+  colores. Marcas admite además `idCat`.
+
+Productos/variantes ajenos o no publicables → 404; filtros de referencia ajena →
+cero resultados. Los listados y conteos usan el mismo tenant. Selectores externos
+`empresa`, `idEmp`, `idemp`, `tenant`, `X-Empresa`, `X-Idemp` y `X-Tenant-Id` se
+rechazan con 422: no cambian el contexto autenticado. Sin sesión, 401; sesión no
+cliente, 403; sesión de plataforma, 401. `nroSuc` no es un filtro de listado
+documentado: la disponibilidad viene embebida en el detalle, sin abrir rutas CU11.
+
+Reglas conservadas: productos y variantes activos; disponibilidad exclusivamente
+en sucursales activas; faceta de marcas activas; promoción solo activa y vigente.
+Colecciones/temporadas son referencias de filtrado, no se añade una regla nueva
+de publicación por temporada/calendario. Los catálogos referenciados ya tienen
+`idemp` en el SQL SaaS canónico (incluidas tallas y colores); no se convirtió
+ningún catálogo global mediante DDL. El mapeo diferido conserva las lecturas legacy.
+La suma de disponibilidad ya no incluye inventario de sucursales cerradas.
+
+No hay escrituras, auditoría de GET, procedimiento de mutación ni migración CU10.
+Solo SELECT ORM con criterios tenant en entidades, joins, subconsultas y conteos,
+además de RLS. Proveedores y sus datos privados no forman parte de la respuesta.
+CU10 por sí solo no habilita reservas, carrito ni sucursales CU11. La selección
+posterior explícita CU11/CU12 del runner se describe a continuación.
+
+Angular reutiliza `/tienda` y `/tienda/prendas/:id`: borra facetas, páginas,
+preview y caché al cambiar la sesión y cancela/descarta respuestas anteriores.
+No persiste catálogo en almacenamiento global; SSR/Service Worker no cachean API.
+Flutter conserva sus pantallas y Bearer, recrea el estado por identidad/sesión
+(sin usar credenciales como claves) y descarta resultados de widgets anteriores.
+Estas consultas no conceden las acciones CU11/CU12 que aparezcan en la UI legacy.
+
+### Reservas CU11 y carrito CU12 multitenant
+
+Prefijos explícitos: `/api/cliente/reservas`, `/api/cliente/sucursales` y
+`/api/cliente/carrito`. Tenant/cliente se derivan de sesión y se verifica propiedad
+de detalles incluso entre clientes de una empresa. Reserva reduce disponibilidad,
+no stock físico; cancelar/expirar libera una vez y solo dentro del contexto propio.
+Carrito calcula importes base con precios del servidor y no retiene inventario.
+Compra/pago y mutaciones legacy de caja permanecen cerrados.
+
+Reserva offline usa `/api/sync/lote`, UUID original y origen `pwa`/`movil`;
+pendiente local no implica aceptación ni retención. El ledger verifica propietario
+por empresa/UUID y conserva conflictos/rechazos. Se reutiliza SQL SaaS canónico,
+sin migración nueva. Fixtures E2E propios: `scripts/manage_reservas_carrito_e2e.py`,
+solo contra `127.0.0.1:55432/fashionstore_test`, nunca seed/reset como cleanup.
+
+Equivalencias documentales CU18/CU19 y brecha SQLite móvil:
+`../EQUIVALENCIAS_RESERVAS_CARRITO.md`. Evidencia vigente: sección 13 de
+`../INFORME_INTEGRACION_SAAS_POST_AUDITORIA.md`.
+
+### CU22: atención de reservas y CU23: devoluciones/cambios
+
+Los prefijos administrativos `/api/admin/reservas-sucursal` y
+`/api/admin/devoluciones` solo entran al allowlist de ejecución cuando `cu22`
+o `cu23` figuran explícitamente en `MULTITENANT_MODULES`; el valor
+predeterminado sigue vacío. El runner local los habilita para pruebas después de
+verificar aislamiento y permisos. Ninguna sesión SaaS o permiso CU22/CU23 por sí
+solo los activa en otros entornos.
+
+CU22 deriva tenant y empleado de la sesión, limita la sucursal asignada y separa
+disponibilidad retenida de stock físico. La reserva solo se atiende tras una
+venta pagada; la entrega no vuelve a descontar stock. Cancelación y vencimiento
+no liberan dos veces la disponibilidad.
+
+CU23 requiere venta pagada de la misma empresa/sucursal autorizada, usa la
+política económica congelada en el detalle de venta y verifica cantidades
+retornables bajo bloqueo transaccional. Cada línea debe inspeccionarse; las
+prendas aptas regresan a disponibilidad y las dañadas quedan fuera de stock
+vendible. Cambios conservan una nueva venta vinculada: diferencias positivas
+requieren pago y las negativas permanecen pendientes hasta confirmación del
+reembolso. El contrato de `idOperacion` UUID no reemplaza `claveoperacion`.
+
+Pruebas PostgreSQL dirigidas:
+`.venv/Scripts/python.exe -m pytest tests/test_saas_postgres.py -k "test_cu22 or test_cu23" -q`.
+E2E administrativo real con fixture privado y cleanup acotado:
+`npm run test:e2e -- --grep "CU23: administrador registra" --reporter=list`
+desde el repositorio web. Ninguno de estos comandos usa seed/reset ni modifica
+Supabase o la base actual.
+
 ## Variables de entorno
 
 La aplicación carga el archivo `.env` de este repositorio. Las variables del

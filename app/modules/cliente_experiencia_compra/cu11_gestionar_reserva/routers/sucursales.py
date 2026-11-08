@@ -9,7 +9,7 @@ from app.modules.cliente_experiencia_compra.cu11_gestionar_reserva.schemas.reser
     SucursalesClienteListado,
 )
 from app.modules.cliente_experiencia_compra.cu11_gestionar_reserva.services import reserva as service
-from app.modules.cliente_experiencia_compra.shared.dependencies import require_cliente
+from app.modules.cliente_experiencia_compra.shared.dependencies import require_cliente_context as require_cliente
 
 router = APIRouter(prefix="/api/cliente/sucursales", tags=["Reservas"],
                    dependencies=[Depends(require_cliente)])

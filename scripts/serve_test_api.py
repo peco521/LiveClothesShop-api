@@ -32,6 +32,9 @@ def read_test_urls() -> tuple[str, str]:
         if (parsed.host != "127.0.0.1" or parsed.port != 55432
                 or parsed.database != "fashionstore_test"):
             raise SystemExit("El servidor E2E solo permite 127.0.0.1:55432/fashionstore_test")
+    if (make_url(app_url).username != "fashionstore_app"
+            or make_url(platform_url).username != "fashionstore_provisioner"):
+        raise SystemExit("La API de pruebas requiere los roles HTTP y plataforma diferenciados")
     return app_url, platform_url
 
 
@@ -48,9 +51,10 @@ def main() -> None:
         cliente_rol_id="E5-CLI",
         environment="test",
         multitenant_enabled=True,
-        # CU05/CU06 admin modules and CU24 caja reads are tenant-scoped;
-        # sales still go through atomic /api/sync.
-        multitenant_modules="cu05,cu06,cu09,sync,saas,cu24",
+        # Explicit local verification selection. Cash sales use atomic /api/sync;
+        # digital checkout uses CU13/CU14 with non-production mock only.
+        multitenant_modules="cu05,cu06,cu07,cu08,cu09,cu10,cu11,cu12,cu13,cu14,cu15,cu18,cu19,cu20,cu21,cu22,cu23,cu25,sync,saas,cu24",
+        reportes_ia_local_enabled=(ROOT / '.local/models/qwen2.5-1.5b-instruct-q4_k_m.gguf').is_file(),
         demo_mode=True,
         password_storage="argon2id",
         payments_provider="mock",

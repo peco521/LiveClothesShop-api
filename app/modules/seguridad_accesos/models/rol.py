@@ -1,4 +1,4 @@
-from sqlalchemy import CheckConstraint, ForeignKey, Integer, String
+from sqlalchemy import CheckConstraint, ForeignKey, Integer, String, text
 from sqlalchemy.orm import Mapped, deferred, mapped_column
 
 from app.core.database import Base
@@ -10,7 +10,7 @@ class Rol(Base):
     __table_args__ = (CheckConstraint("estado IN ('activo', 'inactivo')"),)
 
     nro: Mapped[str] = mapped_column(String(15), primary_key=True)
-    idemp: Mapped[int | None] = deferred(mapped_column(Integer, server_default="NULL"))
+    idemp: Mapped[int | None] = deferred(mapped_column(Integer, nullable=True, server_default=text("NULL")))
     descripcion: Mapped[str] = mapped_column(String(50))
     # CU06: baja lógica del rol. La columna ya existe en la base de datos
     # (estado varchar(15) NOT NULL DEFAULT 'activo'); no requiere migración.
@@ -29,7 +29,7 @@ class RolFuncion(Base):
         ForeignKey("rol.nro", onupdate="CASCADE", ondelete="CASCADE"), primary_key=True)
     # Tenant ownership is required by the PostgreSQL RLS WITH CHECK policy.
     # The authenticated session fills this; clients cannot submit it.
-    idemp: Mapped[int | None] = deferred(mapped_column(Integer, server_default="NULL"))
+    idemp: Mapped[int | None] = deferred(mapped_column(Integer, nullable=True, server_default=text("NULL")))
     idfun: Mapped[str] = mapped_column(
         ForeignKey("funcion.id", onupdate="CASCADE", ondelete="CASCADE"), primary_key=True)
     descripcion: Mapped[str] = mapped_column(String(100))

@@ -16,7 +16,7 @@ Reglas verificadas en PostgreSQL (base de pruebas separada):
 
 import hashlib
 import json
-from datetime import timezone
+from datetime import date, timezone
 
 from pydantic import ValidationError
 from sqlalchemy import text
@@ -46,6 +46,7 @@ EN_PROCESO = "en_proceso"
 # (fragmento del mensaje del procedimiento, código, estado terminal)
 _REGLAS = (
     ("STOCK_INSUFICIENTE", STOCK_INSUFICIENTE, "conflicto"),
+    ("No hay disponibilidad", STOCK_INSUFICIENTE, "conflicto"),
     ("PRECIO_CAMBIADO", PRECIO_CAMBIADO, "conflicto"),
     ("reserva vencida", RESERVA_VENCIDA, "conflicto"),
     ("RESERVA_VENCIDA", RESERVA_VENCIDA, "conflicto"),
@@ -78,7 +79,7 @@ def _mensaje(exc) -> str:
 
 def clasificar(exc) -> tuple[str, str]:
     if isinstance(exc, DomainError):
-        return exc.code, "rechazada"
+        return exc.code, ("conflicto" if exc.code in {"disponibilidad_insuficiente", "stock_insuficiente", "reserva_vencida"} else "rechazada")
     mensaje = _mensaje(exc)
     for fragmento, codigo, estado in _REGLAS:
         if fragmento.lower() in mensaje.lower():
@@ -160,9 +161,16 @@ def _permiso(operacion, identity) -> ResultadoOperacion | None:
     return None
 
 
-def _dependencias(db, idemp, operacion, confirmadas, cache):
+def _dependencias(db, idemp, operacion, confirmadas, cache, usuario_id=None):
     for dependencia in operacion.dependeDe:
         clave = str(dependencia)
+        if usuario_id is not None:
+            owner = db.scalar(text("SELECT idusuario FROM operacion_sync WHERE idemp=:tenant "
+                                   "AND idoperacion=CAST(:uuid AS uuid)"),
+                              {"tenant": idemp, "uuid": clave})
+            if owner != usuario_id:
+                return _resultado(operacion, "conflicto", codigo=DEPENDENCIA_RECHAZADA,
+                                  detalle="Dependencia no disponible para esta sesión")
         if clave in confirmadas:
             if confirmadas[clave] != "confirmada":
                 return _resultado(operacion, "conflicto", codigo=DEPENDENCIA_RECHAZADA,
@@ -220,7 +228,8 @@ def _procesar_una(db, idemp, operacion, identity, id_dispositivo, origen, settin
     usuario_id = identity.usuario.idUsuario
     db.rollback()
     if operacion.dependeDe:
-        problema = _dependencias(db, idemp, operacion, confirmadas, {})
+        problema = _dependencias(db, idemp, operacion, confirmadas, {},
+                                 usuario_id if getattr(identity.usuario, "tipo", None) == "C" else None)
         if problema is not None:
             return problema
         db.rollback()
@@ -230,6 +239,16 @@ def _procesar_una(db, idemp, operacion, identity, id_dispositivo, origen, settin
     fila = None
     try:
         with db.begin():
+            # Serialize HTTP claims before checking ownership. A guessed UUID
+            # must not reveal another client's result or update its ledger.
+            db.execute(text("SELECT pg_advisory_xact_lock(:tenant, hashtext(:uuid))"),
+                       {"tenant": idemp, "uuid": str(operacion.id)})
+            owner = db.scalar(text("SELECT idusuario FROM operacion_sync "
+                                   "WHERE idemp=:tenant AND idoperacion=CAST(:uuid AS uuid)"),
+                              {"tenant": idemp, "uuid": str(operacion.id)})
+            if owner is not None and owner != usuario_id:
+                return _resultado(operacion, "rechazada", codigo=PERMISO_DENEGADO,
+                                  detalle="La operación no pertenece a esta sesión")
             estado = _tomar(db, idemp, operacion, hash_payload, id_dispositivo, usuario_id)
             if estado == "nueva":
                 nro_venta, nro_reserva = _ejecutar(db, idemp, operacion, identity, origen)
@@ -287,7 +306,7 @@ def _procesar_una(db, idemp, operacion, identity, id_dispositivo, origen, settin
 def _ejecutar(db, idemp, operacion, identity, origen) -> tuple[int | None, int | None]:
     if operacion.tipo == "venta":
         return _venta(db, idemp, operacion, identity, origen), None
-    return None, _reserva(db, idemp, operacion, identity)
+    return None, _reserva(db, idemp, operacion, identity, origen)
 
 
 def _venta(db, idemp, operacion, identity, origen) -> int:
@@ -318,24 +337,40 @@ def _venta(db, idemp, operacion, identity, origen) -> int:
     return int(fila[0])
 
 
-def _reserva(db, idemp, operacion, identity) -> int:
+def _reserva(db, idemp, operacion, identity, origen) -> int:
+    from app.modules.cliente_experiencia_compra.shared.dependencies import require_cliente
+    from app.modules.cliente_experiencia_compra.cu11_gestionar_reserva.services import reserva as service
+    from app.modules.cliente_experiencia_compra.cu11_gestionar_reserva.schemas.reserva import ReservaCrear
+    from app.modules.seguridad_accesos.services.bitacora import record
+
+    require_cliente(identity, db)
     datos = _datos_reserva(operacion)
+    reservation = ReservaCrear(nroSuc=operacion.sucursal, fechaReserva=datos.fecha,
+        horaAtencion=datos.hora, items=[{"idVar": row.idVariante, "cantidad": row.cantidad} for row in datos.lineas])
+    if reservation.fechaReserva < date.today():
+        raise DomainError(409, RESERVA_VENCIDA, "La fecha de la reserva ya venció")
+    merged = service._combinar_items(reservation.items)
+    service._sucursal(db, operacion.sucursal)
+    service._validar_horario(db, operacion.sucursal, reservation.horaAtencion, reservation.fechaReserva)
+    service._validar_variantes(db, merged)
     resultado = db.execute(text("""
         CALL sp_realizar_reserva(
           CAST(:idemp AS integer), CAST(:usuario AS varchar), CAST(:sucursal AS integer),
           CAST(:fecha AS date), CAST(:hora AS time),
           CAST(:variantes AS varchar[]), CAST(:cantidades AS integer[]),
-          NULL, CAST(:uuid AS uuid), CAST('offline' AS varchar))
+          NULL, CAST(:uuid AS uuid), CAST(:origen AS varchar))
     """), {
         "idemp": idemp, "usuario": identity.usuario.idUsuario,
         "sucursal": operacion.sucursal, "fecha": datos.fecha, "hora": datos.hora,
-        "variantes": [linea.idVariante for linea in datos.lineas],
-        "cantidades": [linea.cantidad for linea in datos.lineas],
+        "variantes": sorted(merged),
+        "cantidades": [merged[key] for key in sorted(merged)],
         "uuid": str(operacion.id),
+        "origen": origen,
     })
     fila = resultado.fetchone()
     if not fila or fila[0] is None:
         raise DomainError(409, "reserva_no_registrada", "La reserva no pudo registrarse")
+    record(db, "reserva_creada", identity.usuario.idUsuario, None, True)
     return int(fila[0])
 
 
@@ -359,12 +394,15 @@ def _registrar_rechazo(db, idemp, operacion, identity, id_dispositivo,
         })
 
 
-def historial(db, estado: str | None, offset: int, limit: int) -> HistorialSync:
+def historial(db, estado: str | None, offset: int, limit: int, identity=None) -> HistorialSync:
     idemp = db.info.get("idemp")
     if idemp is None:
         raise DomainError(401, "autenticacion_rechazada", "Sincronización requiere una sesión de empresa")
     filtro = " AND estado = :estado" if estado else ""
     params = {"idemp": idemp, "offset": offset, "limit": limit}
+    if identity is not None and identity.usuario.tipo == "C":
+        filtro += " AND idusuario = :user"
+        params["user"] = identity.usuario.idUsuario
     if estado:
         params["estado"] = estado
     total = db.execute(text(

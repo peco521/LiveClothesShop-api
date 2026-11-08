@@ -9,6 +9,7 @@ from app.modules.inventario_productos.cu18_gestionar_catalogo.schemas.catalogo i
 from app.modules.inventario_productos.cu18_gestionar_catalogo.repositories import catalogo as repo
 from app.modules.inventario_productos.cu18_gestionar_catalogo.services import catalogo as service
 from app.modules.cliente_experiencia_compra.shared.models.catalogo import Producto
+from app.modules.inventario_productos.shared.tenant import legacy_write_only
 
 identity = access('CU18')
 router = APIRouter(prefix='/api/admin/catalogo', tags=['CU18 Gestionar Catálogo'], dependencies=[Depends(identity)])
@@ -20,8 +21,9 @@ def peer(request):
 
 
 @router.post('/imagenes', status_code=201)
-def image_upload(request: Request, file: UploadFile = File(...)):
+def image_upload(request: Request, file: UploadFile = File(...), db=Depends(get_db)):
     try:
+        legacy_write_only(db)
         return upload_image(request.app.state.settings, file.file.read(MAX_IMAGE_BYTES + 1), file.content_type)
     finally:
         file.file.close()

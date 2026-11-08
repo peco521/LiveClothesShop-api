@@ -2,19 +2,27 @@ from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import CheckConstraint, Date, ForeignKey, Integer, Numeric, SmallInteger, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, declared_attr, deferred, mapped_column
 
 from app.core.database import Base
 
 
-class Categoria(Base):
+class TenantCatalog:
+    # These columns already exist in the canonical SaaS schema. Deferred keeps
+    # legacy reads compatible with installations that have no tenant columns.
+    @declared_attr
+    def idemp(cls) -> Mapped[int | None]:
+        return deferred(mapped_column(Integer, nullable=True, server_default="NULL"))
+
+
+class Categoria(TenantCatalog, Base):
     __tablename__ = "categoria"
 
     idcat: Mapped[int] = mapped_column(Integer, primary_key=True)
     descripcion: Mapped[str] = mapped_column(String(30))
 
 
-class Marca(Base):
+class Marca(TenantCatalog, Base):
     __tablename__ = "marca"
     __table_args__ = (CheckConstraint("estado IN ('activo', 'inactivo')"),)
 
@@ -23,14 +31,14 @@ class Marca(Base):
     estado: Mapped[str] = mapped_column(String(20))
 
 
-class Coleccion(Base):
+class Coleccion(TenantCatalog, Base):
     __tablename__ = "coleccion"
 
     idcol: Mapped[int] = mapped_column(Integer, primary_key=True)
     descripcion: Mapped[str] = mapped_column(String(150))
 
 
-class Temporada(Base):
+class Temporada(TenantCatalog, Base):
     __tablename__ = "temporada"
     __table_args__ = (CheckConstraint("estado IN ('activo', 'inactivo')"),)
 
@@ -41,7 +49,7 @@ class Temporada(Base):
     estado: Mapped[str] = mapped_column(String(20))
 
 
-class TempColeccion(Base):
+class TempColeccion(TenantCatalog, Base):
     __tablename__ = "tempcoleccion"
 
     idtemp: Mapped[int] = mapped_column(ForeignKey("temporada.idtemp", onupdate="CASCADE", ondelete="CASCADE"),
@@ -50,7 +58,7 @@ class TempColeccion(Base):
                                        primary_key=True)
 
 
-class Proveedor(Base):
+class Proveedor(TenantCatalog, Base):
     __tablename__ = "proveedor"
 
     idprov: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -60,7 +68,7 @@ class Proveedor(Base):
     telefono: Mapped[str] = mapped_column(String(20))
 
 
-class Promocion(Base):
+class Promocion(TenantCatalog, Base):
     __tablename__ = "promocion"
     __table_args__ = (
         CheckConstraint("tipoDescuento IN ('porcentaje', 'montoFijo')"),
@@ -78,7 +86,7 @@ class Promocion(Base):
     estado: Mapped[str] = mapped_column(String(20))
 
 
-class Producto(Base):
+class Producto(TenantCatalog, Base):
     __tablename__ = "producto"
     __table_args__ = (CheckConstraint("estado IN ('activo', 'inactivo')"),)
 
@@ -92,14 +100,14 @@ class Producto(Base):
     idprov: Mapped[int] = mapped_column(ForeignKey("proveedor.idprov", onupdate="CASCADE", ondelete="CASCADE"))
 
 
-class Talla(Base):
+class Talla(TenantCatalog, Base):
     __tablename__ = "talla"
 
     idtalla: Mapped[int] = mapped_column(SmallInteger, primary_key=True, autoincrement=False)
     descripcion: Mapped[str] = mapped_column(String(8))
 
 
-class VarianteProd(Base):
+class VarianteProd(TenantCatalog, Base):
     __tablename__ = "varianteprod"
     __table_args__ = (
         CheckConstraint("precio > 0"),
@@ -115,7 +123,7 @@ class VarianteProd(Base):
     idprod: Mapped[str] = mapped_column(ForeignKey("producto.idprod", onupdate="CASCADE", ondelete="CASCADE"))
 
 
-class Color(Base):
+class Color(TenantCatalog, Base):
     __tablename__ = "color"
 
     idcolor: Mapped[int] = mapped_column(SmallInteger, primary_key=True, autoincrement=False)
@@ -123,7 +131,7 @@ class Color(Base):
     hex: Mapped[str] = mapped_column(String(20))
 
 
-class VarianteColor(Base):
+class VarianteColor(TenantCatalog, Base):
     __tablename__ = "variantecolors"
 
     idvar: Mapped[str] = mapped_column(ForeignKey("varianteprod.idvariante", onupdate="CASCADE", ondelete="CASCADE"),
@@ -132,11 +140,13 @@ class VarianteColor(Base):
                                          primary_key=True)
 
 
-class Inventario(Base):
+class Inventario(TenantCatalog, Base):
     __tablename__ = "inventario"
 
     nroinv: Mapped[int] = mapped_column(Integer, primary_key=True)
     stock: Mapped[int] = mapped_column(Integer)
     cantdisp: Mapped[int] = mapped_column(Integer)
+    stockdanado: Mapped[int] = deferred(
+        mapped_column(Integer, nullable=False, server_default="0"))
     nrosuc: Mapped[int] = mapped_column(ForeignKey("sucursal.nro", onupdate="CASCADE", ondelete="CASCADE"))
     idvar: Mapped[str] = mapped_column(ForeignKey("varianteprod.idvariante", onupdate="CASCADE", ondelete="CASCADE"))

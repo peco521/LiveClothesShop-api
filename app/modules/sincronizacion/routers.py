@@ -38,7 +38,7 @@ def historial(estado: str | None = Query(default=None, pattern=r"^[a-z_]+$"),
               request: Request = None, db: Session = Depends(get_db),
               identity=Depends(current_identity)):
     _require_multitenant(request)
-    return services.historial(db, estado, offset, limit)
+    return services.historial(db, estado, offset, limit, identity)
 
 
 @router.post("/conflictos/{operacion_id}/resolver")

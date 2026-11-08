@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query, Request, Response
 from app.core.database import get_db
-from app.modules.inventario_productos.shared.operaciones_access import access
+from app.modules.inventario_productos.shared.access import access
 from app.modules.inventario_productos.shared.operaciones_referencias import add_references, peer
 from app.modules.inventario_productos.CU21_gestionar_promo_desc.services import promociones
 from app.modules.inventario_productos.CU21_gestionar_promo_desc.schemas.promociones import PromotionInput

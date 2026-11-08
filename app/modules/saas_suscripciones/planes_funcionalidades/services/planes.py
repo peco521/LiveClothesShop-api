@@ -4,7 +4,7 @@ from datetime import datetime
 from ipaddress import ip_address
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Integer, String, column, delete, func, select, table
+from sqlalchemy import Integer, String, column, delete, func, select, table, text
 
 from app.core.errors import DomainError
 from app.modules.inventario_productos.shared.access import transaction
@@ -40,7 +40,7 @@ def _validate_codes(db, values):
 
 
 def _view(db, plan):
-    return {'id': plan.idplan, 'nombre': plan.nombre, 'maxSucursales': plan.maxsucursales,
+    return {'idPlan': plan.idplan, 'nombre': plan.nombre, 'maxSucursales': plan.maxsucursales,
             'estado': plan.estado, 'funcionalidades': _codes(db, plan.idplan)}
 
 
@@ -68,12 +68,19 @@ def subscriptions(db, plan_id, lock=False):
     ).order_by(SuscripcionPlan.idsusc)
     if lock:
         active = active.with_for_update(of=SuscripcionPlan)
+    rows = list(db.execute(active))
+    if lock and db.get_bind().dialect.name == 'postgresql':
+        for idemp in sorted({sub.idemp for sub, *_ in rows}):
+            db.execute(text('SELECT pg_advisory_xact_lock(1001, :idemp)'), {'idemp': idemp})
     result = []
-    for sub, mapping, version, company, branches in db.execute(active):
+    for sub, mapping, version, company, branches in rows:
         if mapping is None or version is None or mapping.idplan != plan_id or version.idplan != plan_id:
             raise DomainError(409, 'version_suscripcion_no_disponible', 'Falta la versión de una suscripción; revise la configuración de la plataforma')
         if company is None:
             raise DomainError(409, 'empresa_no_disponible', 'Una suscripción no tiene empresa válida')
+        if lock and db.get_bind().dialect.name == 'postgresql':
+            branches = db.scalar(select(func.count()).select_from(sucursal).where(
+                sucursal.c.idemp == sub.idemp, sucursal.c.estado == 'activo'))
         result.append({'idSuscripcion': sub.idsusc, 'idEmpresa': sub.idemp, 'empresa': company,
                        'version': version.numero, 'maxSucursales': version.maxsucursales,
                        'sucursalesActivas': branches})

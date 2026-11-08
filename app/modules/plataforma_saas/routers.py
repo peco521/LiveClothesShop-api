@@ -10,7 +10,7 @@ from app.modules.plataforma_saas import services
 from app.modules.plataforma_saas.dependencies import require_platform_permission
 from app.modules.plataforma_saas.schemas import (
     AccesoApoyo, CambioEstado, CambioPlan, EmpresaResumen, IdentidadVisual,
-    NuevaEmpresa, PlanResumen, UsoSucursales,
+    NuevaEmpresa, UsoSucursales,
 )
 
 router = APIRouter(prefix="/api/saas", tags=["Plataforma SaaS"])
@@ -83,12 +83,6 @@ def cambiar_plan(idemp: int, data: CambioPlan, request: Request,
 def uso_sucursales(idemp: int, db: Session = Depends(get_platform_db),
                    identity=Depends(require_platform_permission(EMPRESAS))):
     return services.uso_sucursales(db, idemp)
-
-
-@router.get("/planes", response_model=list[PlanResumen])
-def listar_planes(db: Session = Depends(get_platform_db),
-                  identity=Depends(require_platform_permission(PLANES))):
-    return services.listar_planes(db)
 
 
 @router.get("/auditoria")

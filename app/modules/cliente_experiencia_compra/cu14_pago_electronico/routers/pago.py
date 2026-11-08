@@ -8,12 +8,18 @@ from app.modules.cliente_experiencia_compra.cu14_pago_electronico.schemas.pago i
     PagoReprocesar,
 )
 from app.modules.cliente_experiencia_compra.cu14_pago_electronico.services import pago as service
-from app.modules.cliente_experiencia_compra.shared.dependencies import require_cliente
+from app.modules.cliente_experiencia_compra.shared.dependencies import require_cliente_context as require_cliente
 from app.core.errors import DomainError
 from app.modules.cliente_experiencia_compra.cu14_pago_electronico.services import checkout_stripe
 
+def sandbox_only(request:Request):
+    settings=request.app.state.settings
+    if settings.multitenant_enabled and (settings.payments_provider!='mock' or settings.environment=='production'):
+        raise DomainError(503,'pago_proveedor_no_verificado','Solo está verificado el sandbox académico sin cargos reales')
+
+
 router = APIRouter(prefix="/api/cliente/pagos", tags=["Pago electrónico"],
-                   dependencies=[Depends(require_cliente)])
+                   dependencies=[Depends(require_cliente),Depends(sandbox_only)])
 
 
 def peer(request):

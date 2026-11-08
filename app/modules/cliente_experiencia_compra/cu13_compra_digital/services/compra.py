@@ -145,3 +145,23 @@ def detalle(db, nroVenta: int, user_id: str):
     if row is None:
         raise DomainError(404, "venta_no_encontrada", "Venta no encontrada")
     return _vista(db, row)
+
+
+def cancelar_sandbox(db,nroVenta,user_id,peer):
+    from app.modules.cliente_experiencia_compra.cu14_pago_electronico.repositories import pago as payments
+    with transaction(db):
+        carrito_repo.locked_cliente(db,user_id)
+        row=payments.locked_venta(db,nroVenta)
+        if row is None or row.idusuariocl!=user_id or row.idcarrito is None:
+            raise DomainError(404,'venta_no_encontrada','Venta no encontrada')
+        paid=payments.pagos_de_venta(db,row.nroventa)
+        if any(p.estado=='aprobado' for p in paid):
+            raise DomainError(409,'venta_pagada','Una venta pagada requiere el flujo de devolución, no cancelación')
+        if row.estado=='anulada': return _vista(db,row)
+        for payment in paid:
+            if payment.estado=='pendiente':
+                payment.estado='rechazado'
+                record(db,'pago_rechazado',user_id,peer,True)
+        row.estado='anulada'
+        record(db,'venta_anulada',user_id,peer,True)
+        return _vista(db,row)

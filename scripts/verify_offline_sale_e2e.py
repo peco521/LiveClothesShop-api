@@ -29,15 +29,17 @@ def engine():
     url = values.get("TEST_PLATFORM_DATABASE_URL", "")
     parsed = make_url(url)
     if (parsed.host != "127.0.0.1" or parsed.port != 55432
-            or parsed.database != "fashionstore_test"):
+            or parsed.database != "fashionstore_test"
+            or parsed.username != "fashionstore_provisioner"):
         raise SystemExit("El E2E solo permite 127.0.0.1:55432/fashionstore_test")
-    return create_engine(url)
+    return create_engine(url, hide_parameters=True)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("fixture", "snapshot"))
+    parser.add_argument("mode", choices=("fixture", "snapshot", "cleanup"))
     parser.add_argument("--uuid", type=UUID)
+    parser.add_argument("--cleanup-uuid", type=UUID, action="append", default=[])
     parser.add_argument("--variant")
     parser.add_argument("--branch", type=int)
     parser.add_argument("--stock-before", type=int)
@@ -61,6 +63,50 @@ def main():
                 """)).mappings().one()
                 print(json.dumps(dict(row), default=str))
                 return
+        if args.mode == "cleanup":
+            with db.begin() as conn:
+                idemp = conn.execute(text(
+                    "SELECT idEmp FROM empresa WHERE codigo='manaco'")).scalar_one()
+                for operation in args.cleanup_uuid:
+                    sale_rows = conn.execute(text("""
+                        SELECT nroVenta AS "nroVenta", nroSuc AS "nroSuc", origen FROM venta
+                        WHERE idEmp=:idemp AND idOperacion=:uuid
+                    """), {"idemp": idemp, "uuid": operation}).all()
+                    conn.execute(text("""
+                        DELETE FROM bitacora
+                        WHERE idEmp=:idemp AND detalles->>'idOperacion'=:uuid
+                    """), {"idemp": idemp, "uuid": str(operation)})
+                    conn.execute(text("""
+                        DELETE FROM operacion_sync WHERE idEmp=:idemp AND idOperacion=:uuid
+                    """), {"idemp": idemp, "uuid": operation})
+                    for sale in sale_rows:
+                        details = conn.execute(text("""
+                            SELECT idVar AS "idVar", cantidad FROM detalleVenta
+                            WHERE idEmp=:idemp AND nroVenta=:sale
+                        """), {"idemp": idemp, "sale": sale.nroVenta}).all()
+                        for detail in details:
+                            conn.execute(text("""
+                                UPDATE inventario SET stock=stock + :cantidad,
+                                                       cantDisp=cantDisp + :cantidad
+                                WHERE idEmp=:idemp AND nroSuc=:branch AND idVar=:variant
+                            """), {"idemp": idemp, "branch": sale.nroSuc,
+                                  "variant": detail.idVar, "cantidad": detail.cantidad})
+                            conn.execute(text("""
+                                DELETE FROM movimiento_inv m USING inventario i
+                                WHERE m.idEmp=:idemp AND m.nroInv=i.nroInv
+                                  AND i.idEmp=m.idEmp AND i.nroSuc=:branch AND i.idVar=:variant
+                                  AND m.motivo=:motivo
+                            """), {"idemp": idemp, "branch": sale.nroSuc,
+                                  "variant": detail.idVar,
+                                  "motivo": f"Venta {sale.origen} #{sale.nroVenta}"})
+                        conn.execute(text(
+                            "DELETE FROM pago WHERE idEmp=:idemp AND nroVenta=:sale"),
+                            {"idemp": idemp, "sale": sale.nroVenta})
+                        conn.execute(text(
+                            "DELETE FROM venta WHERE idEmp=:idemp AND nroVenta=:sale"),
+                            {"idemp": idemp, "sale": sale.nroVenta})
+            return
+        with db.connect() as conn:
             if args.uuid is None or not args.variant or not args.branch:
                 parser.error("snapshot requiere --uuid, --variant y --branch")
             stock_before = args.stock_before

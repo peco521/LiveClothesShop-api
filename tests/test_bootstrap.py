@@ -356,7 +356,7 @@ def test_catalog_exact_success_repeat_and_preservation(empty_factory, data, pass
     after = catalog_snapshot(empty_factory)
     assert before[0] == after[0] and before[3:] == after[3:]
     assert after[1] == INITIAL_PERMISSIONS
-    assert after[2] == tuple(("superadmin", code, f"Permite {description}.")
+    assert after[2] == tuple(("superadmin", None, code, f"Permite {description}.")
                             for code, description in INITIAL_PERMISSIONS)
     assert all(len(description) <= 50 and len(f"Permite {description}.") <= 100
                for _, description in INITIAL_PERMISSIONS)

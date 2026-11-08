@@ -42,7 +42,9 @@ cu22_router = import_module('app.modules.Reservas y Atencion al cliente.cu22_ges
 cu23_router = import_module('app.modules.Reservas y Atencion al cliente.cu23_gestionar_devoluciones.routers.devoluciones').router
 from app.modules.ventas_reportes.cu24_registrar_venta.routers.ventas import router as cu24_router
 from app.modules.ventas_reportes.cu25_reportes.routers.reportes import router as cu25_router
+from app.modules.ventas_reportes.cu25_reportes.routers.dinamicos import router as cu25_dinamicos_router
 from app.modules.sincronizacion.routers import router as sync_router
+from app.modules.plataforma_saas.routers import router as plataforma_saas_router
 from app.modules.saas_suscripciones.planes_funcionalidades.routers.planes import router as saas_planes_router
 
 
@@ -52,12 +54,27 @@ from app.modules.saas_suscripciones.planes_funcionalidades.routers.planes import
 MODULE_PREFIXES = {
     "cu05": ("/api/admin/usuarios", "/api/admin/empleados"),
     "cu06": ("/api/admin/roles", "/api/admin/funciones"),
+    "cu07": ("/api/admin/clientes",),
+    "cu08": ("/api/admin/bitacora",),
     "cu09": ("/api/admin/ciudades", "/api/admin/sucursales"),
+    "cu10": ("/api/catalogo",),
+    "cu11": ("/api/cliente/reservas", "/api/cliente/sucursales"),
+    "cu12": ("/api/cliente/carrito",),
+    "cu13": ("/api/cliente/compras",),
+    "cu14": ("/api/cliente/pagos",),
+    "cu15": ("/api/cliente/historial-compras",),
+    "cu20": ("/api/admin/inventario",),
+    "cu19": ("/api/admin/proveedores",),
+    "cu18": ("/api/admin/catalogo",),
+    "cu21": ("/api/admin/promociones",),
+    "cu22": ("/api/admin/reservas-sucursal",),
+    "cu23": ("/api/admin/devoluciones",),
     # En SaaS CU24 habilita solo sus lecturas de catálogo/referencias; las
     # mutaciones legacy siguen bloqueadas. Las ventas offline usan /api/sync.
     "cu24": ("/api/admin/caja/referencias", "/api/admin/caja/productos",
              "/api/admin/caja/clientes"),
     "sync": ("/api/sync",),
+    "cu25": ("/api/admin/reportes/dinamicos", "/api/admin/reportes/interpretar", "/api/admin/reportes/analitica"),
     "saas": ("/api/saas",),
 }
 
@@ -169,6 +186,10 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
                     allowed = request.method == "GET" and (
                         path in safe_reads or path.startswith("/api/admin/caja/productos/")
                     )
+                if path == '/api/admin/catalogo/imagenes':
+                    # External image-provider calls are not part of the local
+                    # verified catalog block, regardless of multipart validity.
+                    allowed = False
                 if not allowed:
                     return error_response(503, "modulo_pendiente",
                                           "Módulo pendiente de aislamiento por empresa")
@@ -260,6 +281,8 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
     application.include_router(cu23_router)
     application.include_router(cu24_router)
     application.include_router(cu25_router)
+    application.include_router(cu25_dinamicos_router)
+    application.include_router(plataforma_saas_router)
     application.include_router(saas_planes_router)
     application.include_router(sync_router)
     return application

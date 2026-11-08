@@ -7,7 +7,7 @@ from app.modules.cliente_experiencia_compra.cu13_compra_digital.schemas.compra i
     VentaDetalle,
 )
 from app.modules.cliente_experiencia_compra.cu13_compra_digital.services import compra as service
-from app.modules.cliente_experiencia_compra.shared.dependencies import require_cliente
+from app.modules.cliente_experiencia_compra.shared.dependencies import require_cliente_context as require_cliente
 from app.core.errors import DomainError
 from app.modules.cliente_experiencia_compra.cu14_pago_electronico.services.checkout_stripe import cancel_sale
 
@@ -22,6 +22,9 @@ def peer(request):
 @router.post("/desde-carrito", response_model=VentaDetalle, status_code=201)
 def checkout(data: CompraCrear, request: Request, response: Response,
              db: Session = Depends(get_db), identity=Depends(require_cliente)):
+    settings=request.app.state.settings
+    if settings.multitenant_enabled and (settings.payments_provider!='mock' or settings.environment=='production'):
+        raise DomainError(503,'pago_proveedor_no_verificado','Solo está verificado el checkout sandbox sin cargos reales')
     vista, creada = service.checkout(db, data, identity.usuario.idUsuario, peer(request))
     # Idempotencia: el reintento devuelve la venta pendiente existente con 200.
     if not creada:
@@ -47,6 +50,11 @@ def detail(nroVenta: int, db: Session = Depends(get_db),
 @router.post("/{nroVenta}/cancelar", response_model=VentaDetalle)
 def cancel(nroVenta: int, request: Request, db: Session = Depends(get_db), identity=Depends(require_cliente)):
     try:
+        settings=request.app.state.settings
+        if settings.multitenant_enabled:
+            if settings.payments_provider!='mock' or settings.environment=='production':
+                raise DomainError(503,'pago_proveedor_no_verificado','Solo está verificado el sandbox académico sin cargos')
+            return service.cancelar_sandbox(db,nroVenta,identity.usuario.idUsuario,peer(request))
         return cancel_sale(db, nroVenta, identity.usuario.idUsuario, peer(request),
                            getattr(request.app.state, "stripe", None))
     except RuntimeError:

@@ -2,11 +2,13 @@ from contextlib import contextmanager
 from uuid import uuid4
 import secrets
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.errors import DomainError
 from app.core.security import utcnow
 from app.modules.seguridad_accesos.repositories import recuperacion_contrasena, rol, usuario
+from app.modules.seguridad_accesos.models import Usuario
 from app.modules.seguridad_accesos.services.bitacora import record
 from app.modules.seguridad_accesos.shared.repositories import continuidad
 from app.modules.seguridad_accesos.schemas.auth import RolResponse
@@ -58,6 +60,23 @@ def public_role(db, settings):
     return role
 
 
+def administrative_client_role(db, settings):
+    if db.info.get("multitenant") is not True:
+        return public_role(db, settings)
+    tenant_id = db.info.get("idemp")
+    if not isinstance(tenant_id, int) or tenant_id <= 0:
+        raise incoherent()
+    role = rol.get(db, f"E{tenant_id}-CLI")
+    if (role is None or role.idemp != tenant_id or role.estado != "activo"
+            or not set(rol.permissions(db, role.nro)).issubset(
+                {"CU10", "CU11", "CU12", "CU13", "CU14", "CU15", "CU17"})
+            or db.scalar(select(Usuario.idusuario).where(
+                Usuario.idemp == tenant_id, Usuario.nrorol == role.nro,
+                Usuario.tipo != "C").limit(1))):
+        raise incoherent()
+    return role
+
+
 def detail(db, user, role):
     client = profile(db, user)
     if user.nrorol != role.nro:
@@ -80,12 +99,12 @@ def get(db, user_id, *, lock=False):
 
 def get_detail(db, user_id, settings):
     user = get(db, user_id)
-    return detail(db, user, public_role(db, settings))
+    return detail(db, user, administrative_client_role(db, settings))
 
 
 def list_clients(db, settings, **filters):
     users, total = repository.list_candidates(db, **filters)
-    role = public_role(db, settings)
+    role = administrative_client_role(db, settings)
     return ClientesListado(items=[detail(db, user, role) for user in users], total=total,
                            offset=filters["offset"], limit=filters["limit"])
 
@@ -110,13 +129,14 @@ def create(db, data, settings, passwords, actor_id, peer):
     encoded = passwords.hash(data.contrasena.get_secret_value())
     user_id = str(uuid4())
     with transaction(db):
-        role = public_role(db, settings)
+        role = administrative_client_role(db, settings)
         if any(match.idusuario != user_id for match in usuario.by_email(db, email)):
             raise DomainError(409, "correo_duplicado", "El correo ya está registrado")
         revalidate_actor(db, actor_id)
         usuario.create_client(db, user_id=user_id, data=data, password_hash=encoded,
-                              role_id=role.nro, client_code=secrets.token_hex(5))
-        record(db, "cliente_registrado", actor_id, peer, True)
+                              role_id=role.nro, client_code=secrets.token_hex(5),
+                              idemp=db.info.get("idemp") if db.info.get("multitenant") else None)
+        record(db, "cliente_registrado", actor_id, peer, True, resource_id=user_id)
         result = detail(db, get(db, user_id), role)
     return result
 
@@ -125,7 +145,7 @@ def set_state(db, user_id, data, settings, actor_id, peer):
     """CU07 baja lógica: desactiva o reactiva conservando ventas y reservas."""
     with transaction(db):
         user = get(db, user_id, lock=True)
-        role = public_role(db, settings)
+        role = administrative_client_role(db, settings)
         detail(db, user, role)
         revalidate_actor(db, actor_id)
         client = profile(db, user)
@@ -134,7 +154,7 @@ def set_state(db, user_id, data, settings, actor_id, peer):
             client.estado = estado
             db.flush()
             record(db, "cliente_activado" if data.activo else "cliente_desactivado",
-                   actor_id, peer, True)
+                   actor_id, peer, True, resource_id=user_id)
         result = detail(db, user, role)
     return result
 
@@ -142,7 +162,7 @@ def set_state(db, user_id, data, settings, actor_id, peer):
 def edit(db, user_id, data, settings, actor_id, peer):
     with transaction(db):
         user = get(db, user_id, lock=True)
-        role = public_role(db, settings)
+        role = administrative_client_role(db, settings)
         detail(db, user, role)
         revalidate_actor(db, actor_id)
         changes = data.model_dump(exclude_unset=True)
@@ -157,6 +177,6 @@ def edit(db, user_id, data, settings, actor_id, peer):
         if "correo" in changes:
             recuperacion_contrasena.invalidate(db, user_id, utcnow())
         if changes:
-            record(db, "cliente_actualizado", actor_id, peer, True)
+            record(db, "cliente_actualizado", actor_id, peer, True, resource_id=user_id)
         result = detail(db, user, role)
     return result

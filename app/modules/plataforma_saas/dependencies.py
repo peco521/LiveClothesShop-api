@@ -15,6 +15,12 @@ def platform_identity(request: Request, credential: str = Depends(current_creden
     emitirlos) y exige que la cuenta siga siendo `tipo='S'` con idEmp NULL.
     """
     db.info["plataforma"] = True
+    db.info["multitenant"] = request.app.state.settings.multitenant_enabled
+    access = request.app.state.access_tokens.get(credential)
+    if access is not None and not access.plataforma:
+        auth.current_session(db, credential, request.app.state.access_tokens)
+        raise DomainError(403, "acceso_denegado",
+                          "Una sesión empresarial no autoriza operaciones de plataforma")
     _, identity = auth.platform_session(db, credential, request.app.state.access_tokens)
     # La carga de identidad lee usuario/roles y abre la transacción SQLAlchemy
     # de la solicitud. Finalizar esa lectura permite que una mutación posterior

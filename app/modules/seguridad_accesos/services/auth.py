@@ -61,13 +61,6 @@ def register(db, data, settings, passwords, peer, access_tokens):
 
 
 def public_identity(db, user, expires):
-    if user.tipo == "S":
-        if user.idemp is not None:
-            raise authentication_failed()
-        return AuthResponse(
-            usuario=UsuarioResponse(idUsuario=user.idusuario, tipo="S", nombre=user.nombre, correo=user.correo),
-            rol=RolResponse(nro="SAAS", descripcion="Administrador SaaS"), permisos=[], expiraEn=expires,
-        )
     role = rol.get(db, user.nrorol)
     # CU06: un rol dado de baja no autoriza ninguna función. CU05/CU07: una
     # cuenta dada de baja no inicia sesión ni continúa con una sesión abierta.

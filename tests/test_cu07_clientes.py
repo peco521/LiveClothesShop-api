@@ -149,7 +149,8 @@ def test_personal_fields_edit_and_specific_audit(client, customer, operator, fac
     assert all(result.json()[k] == v for k, v in expected.items())
     for key in ("tipo", "nroRol", "rol", "cliente", "idUsuario"):
         assert result.json()[key] == customer[key]
-    assert audit(factory)[-1] == ("cliente_actualizado", operator, {"resultado": "exito"})
+    assert audit(factory)[-1] == ("cliente_actualizado", operator,
+                                  {"resultado": "exito", "idUsuario": customer["idUsuario"]})
 
 
 @pytest.mark.parametrize("body", [
@@ -249,8 +250,8 @@ def test_account_state_deactivation_keeps_data_and_recoveries(client, customer, 
     restored = client.patch(path, json={"activo": True})
     assert restored.status_code == 200 and restored.json()["cliente"]["estado"] == "frecuente"
     assert audit(factory)[len(before):] == [
-        ("cliente_desactivado", operator, {"resultado": "exito"}),
-        ("cliente_activado", operator, {"resultado": "exito"}),
+        ("cliente_desactivado", operator, {"resultado": "exito", "idUsuario": user_id}),
+        ("cliente_activado", operator, {"resultado": "exito", "idUsuario": user_id}),
     ]
     with factory() as db:
         assert db.get(Usuario, user_id) is not None and db.get(Cliente, user_id) is not None
@@ -365,8 +366,8 @@ def test_atomic_rollback_no_sensitive_errors(client, customer, factory, monkeypa
     before = audit(factory)
     original_record = service.record
     original_invalidate = recuperacion_contrasena.invalidate
-    def fail_record(*args):
-        original_record(*args)
+    def fail_record(*args, **kwargs):
+        original_record(*args, **kwargs)
         if failure == "integrity":
             raise IntegrityError("private-marker", {}, Exception("private-marker"))
         raise RuntimeError("private-marker")
@@ -478,7 +479,8 @@ def test_admin_creates_client_without_losing_session(client, operator, registrat
     # La sesión sigue siendo la del operador, no la del cliente recién creado.
     assert client.get("/api/auth/me").json()["usuario"]["idUsuario"] == operator
     assert client.get(BASE).status_code == 200
-    assert audit(factory)[-1] == ("cliente_registrado", operator, {"resultado": "exito"})
+    assert audit(factory)[-1] == ("cliente_registrado", operator,
+                                  {"resultado": "exito", "idUsuario": body["idUsuario"]})
 
 
 def test_duplicate_email_blocks_creation_and_session_is_untouched(client, operator, customer, registration):
@@ -489,7 +491,8 @@ def test_duplicate_email_blocks_creation_and_session_is_untouched(client, operat
 
 def test_client_deactivation_and_reactivation(client, app, customer, operator, registration, factory):
     """CU07 baja lógica: inactivo impide iniciar sesión y se puede reactivar."""
-    path = BASE + "/" + customer["idUsuario"]
+    user_id = customer["idUsuario"]
+    path = BASE + "/" + user_id
     login = {"correo": "cliente@example.com", "contrasena": registration["contrasena"]}
     before = audit(factory)
     off = client.patch(path + "/estado-cuenta", json={"activo": False})
@@ -509,6 +512,6 @@ def test_client_deactivation_and_reactivation(client, app, customer, operator, r
     # cliente en medio quedan en sus propias acciones de bitácora).
     state_events = [row for row in audit(factory)[len(before):] if row[0].startswith("cliente_")]
     assert state_events == [
-        ("cliente_desactivado", operator, {"resultado": "exito"}),
-        ("cliente_activado", operator, {"resultado": "exito"}),
+        ("cliente_desactivado", operator, {"resultado": "exito", "idUsuario": user_id}),
+        ("cliente_activado", operator, {"resultado": "exito", "idUsuario": user_id}),
     ]

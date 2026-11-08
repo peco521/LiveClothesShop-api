@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     # CU25: `fechahora` se guarda en UTC (`func.now()`), así que el dashboard y los
     # reportes agrupan por el día/mes de la zona horaria del negocio.
     reportes_zona_horaria: str = "America/La_Paz"
+    # Optional official local Qwen GGUF. No external paid provider is contacted.
+    reportes_ia_local_enabled: bool = False
     # CU09: validación de direcciones contra OpenStreetMap/Nominatim (sin claves).
     # "disabled" (defecto) no valida y deja latitud/longitud en NULL.
     geocoding_provider: Literal["disabled", "nominatim"] = "disabled"

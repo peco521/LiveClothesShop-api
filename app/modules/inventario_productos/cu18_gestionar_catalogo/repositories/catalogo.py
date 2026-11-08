@@ -1,7 +1,9 @@
 from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import IntegrityError
 
 from app.core.database import Base
 from app.core.errors import DomainError
+from app.modules.inventario_productos.shared.tenant import select_for
 from app.modules.cliente_experiencia_compra.shared.models.catalogo import (
     Categoria, Marca, Coleccion, Temporada, TempColeccion, Talla, Color, Producto,
     VarianteProd, VarianteColor, Proveedor, Promocion,
@@ -21,9 +23,36 @@ def group_info(group):
     return GROUPS[group]
 
 
+def create_supplier(db, values):
+    return create_identified(db,Proveedor,values)
+
+
+def create_identified(db, model, values):
+    # Historical explicit IDs can lead the identity sequence. Savepoints consume
+    # only colliding nextval values, never reset it or bypass tenant RLS.
+    for attempt in range(512):
+        try:
+            with db.begin_nested():
+                assigned=dict(values)
+                pk=list(model.__table__.primary_key)[0]
+                if pk.autoincrement is False and db.get_bind().dialect.name=='postgresql':
+                    # Legacy SQLite smallint maps require explicit IDs; the SaaS
+                    # table has an identity. Read its nextval, not tenant MAX(id).
+                    assigned[pk.key]=db.scalar(text('SELECT nextval(pg_get_serial_sequence(:table,:column))'),
+                                               {'table':model.__tablename__,'column':pk.name})
+                row=model(**assigned)
+                db.add(row)
+                db.flush()
+            return row
+        except IntegrityError as error:
+            if getattr(getattr(error.orig,'diag',None),'constraint_name',None)!=model.__tablename__.lower()+'_pkey':
+                raise
+    raise DomainError(409,'secuencia_no_disponible','No se pudo asignar un identificador del catálogo')
+
+
 def get(db, model, id, lock=False, reference=False):
     pk = list(model.__table__.primary_key)[0]
-    query = select(model).where(pk == id).execution_options(populate_existing=True)
+    query = select_for(db, model).where(pk == id).execution_options(populate_existing=True)
     if lock:
         query = query.with_for_update()
     elif reference:
@@ -44,7 +73,7 @@ def serialize(db, group, row):
     if group == 'temporadas':
         result.update(fechaIni=row.fechaini, fechaFin=row.fechafin)
     if group == 'colecciones':
-        result['idTemps'] = list(db.scalars(select(TempColeccion.idtemp).where(TempColeccion.idcol == row.idcol)
+        result['idTemps'] = list(db.scalars(select_for(db, TempColeccion.idtemp).where(TempColeccion.idcol == row.idcol)
                                            .order_by(TempColeccion.idtemp)))
     if group == 'proveedores':
         result.update(correo=row.correo, direccion=row.direccion, telefono=row.telefono)
@@ -53,14 +82,14 @@ def serialize(db, group, row):
 
 def list_group(db, group, q, offset, limit):
     model, pk, label = group_info(group)
-    query = select(model)
+    query = select_for(db, model)
     if q:
         query = query.where(func.lower(getattr(model, label)).contains(q.lower(), autoescape=True))
-    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    total = db.scalar(select_for(db, func.count()).select_from(query.subquery())) or 0
     rows = db.scalars(query.order_by(getattr(model, label), getattr(model, pk)).offset(offset).limit(limit)).all()
     # Asociación cargada en lote para no hacer N+1 en el listado de colecciones.
     if group == 'colecciones':
-        links = db.execute(select(TempColeccion).where(TempColeccion.idcol.in_([r.idcol for r in rows]))).scalars().all()
+        links = db.execute(select_for(db, TempColeccion).where(TempColeccion.idcol.in_([r.idcol for r in rows]))).scalars().all()
         items = [{'id': r.idcol, 'descripcion': r.descripcion,
                   'idTemps': sorted(x.idtemp for x in links if x.idcol == r.idcol)} for r in rows]
     else:
@@ -91,8 +120,8 @@ def prevent_cascade(db, row, allowed_tables=()):
 
 
 def product_detail(db, row):
-    variants = db.scalars(select(VarianteProd).where(VarianteProd.idprod == row.idprod).order_by(VarianteProd.idvariante)).all()
-    colors = db.execute(select(VarianteColor).where(VarianteColor.idvar.in_([v.idvariante for v in variants]))).scalars().all()
+    variants = db.scalars(select_for(db, VarianteProd).where(VarianteProd.idprod == row.idprod).order_by(VarianteProd.idvariante)).all()
+    colors = db.execute(select_for(db, VarianteColor).where(VarianteColor.idvar.in_([v.idvariante for v in variants]))).scalars().all()
     return {'idProd': row.idprod, 'descripcion': row.descripcion, 'estado': row.estado,
             'idCat': row.idcat, 'idMarca': row.idmarca, 'idCol': row.idcol, 'idProv': row.idprov, 'idPromo': row.idpromo,
             'variantes': [{'idVariante': v.idvariante, 'sku': v.sku, 'precio': v.precio, 'estado': v.estado,
@@ -100,18 +129,18 @@ def product_detail(db, row):
 
 
 def list_products(db, q, estado, offset, limit):
-    query = select(Producto, Categoria.descripcion, Marca.nombre, Coleccion.descripcion, Proveedor.nombre).join(
+    query = select_for(db, Producto, Categoria.descripcion, Marca.nombre, Coleccion.descripcion, Proveedor.nombre).join(
         Categoria, Categoria.idcat == Producto.idcat).join(Marca, Marca.idmarca == Producto.idmarca).join(
         Coleccion, Coleccion.idcol == Producto.idcol).join(Proveedor, Proveedor.idprov == Producto.idprov)
     if q:
         query = query.where(func.lower(Producto.descripcion).contains(q.lower(), autoescape=True) |
-                            select(VarianteProd.idvariante).where(VarianteProd.idprod == Producto.idprod,
+                            select_for(db, VarianteProd.idvariante).where(VarianteProd.idprod == Producto.idprod,
                                 func.lower(VarianteProd.sku).contains(q.lower(), autoescape=True)).exists())
     if estado:
         query = query.where(Producto.estado == estado)
-    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    total = db.scalar(select_for(db, func.count()).select_from(query.subquery())) or 0
     rows = db.execute(query.order_by(Producto.descripcion, Producto.idprod).offset(offset).limit(limit)).all()
-    counts = dict(db.execute(select(VarianteProd.idprod, func.count()).where(VarianteProd.idprod.in_([r[0].idprod for r in rows]))
+    counts = dict(db.execute(select_for(db, VarianteProd.idprod, func.count()).where(VarianteProd.idprod.in_([r[0].idprod for r in rows]))
                              .group_by(VarianteProd.idprod)).all())
     return {'items': [{'idProd': p.idprod, 'descripcion': p.descripcion, 'estado': p.estado,
                        'categoria': c, 'marca': m, 'coleccion': col, 'proveedor': prov,
@@ -125,9 +154,9 @@ def references(db, include_suppliers=True):
         if group == 'proveedores' and not include_suppliers:
             continue
         result[group] = [{'id': getattr(r, pk), 'nombre': getattr(r, label)} for r in
-                         db.scalars(select(model).order_by(getattr(model, label), getattr(model, pk))).all()]
-    links = db.scalars(select(TempColeccion)).all()
+                         db.scalars(select_for(db, model).order_by(getattr(model, label), getattr(model, pk))).all()]
+    links = db.scalars(select_for(db, TempColeccion)).all()
     for collection in result['colecciones']:
         collection['idTemps'] = sorted(link.idtemp for link in links if link.idcol == collection['id'])
-    result['promociones'] = [{'id': r.idpromo, 'nombre': r.nombre} for r in db.scalars(select(Promocion).order_by(Promocion.nombre)).all()]
+    result['promociones'] = [{'id': r.idpromo, 'nombre': r.nombre} for r in db.scalars(select_for(db, Promocion).order_by(Promocion.nombre)).all()]
     return result

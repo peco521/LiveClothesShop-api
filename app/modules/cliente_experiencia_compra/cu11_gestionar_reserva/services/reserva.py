@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from contextlib import contextmanager
 
 from sqlalchemy.exc import DBAPIError, IntegrityError
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.core.database import is_postgresql, sqlstate
 from app.core.errors import DomainError
@@ -134,14 +134,18 @@ def _detalle(db, row: Reserva, vencida: bool):
     detalles = repository.detalles(db, row.nroreserva)
     branch = organizacion.branch(db, row.nrosuc)
     city = organizacion.city(db, branch.idciud) if branch else None
+    if db.info.get("multitenant") is True and (branch is None or city is None):
+        raise DomainError(409, "reserva_no_disponible", "No se pudo consultar la reserva")
     found = repository.variantes_productos(db, sorted({d.idvar for d in detalles}))
     tallas = catalogo.tallas_map(db, list({v.idtalla for v, _ in found.values()}))
     colores = catalogo.variant_colors(db, list(found))
     categorias = {c.idcat: c.descripcion for c in db.scalars(
-        select(Categoria).where(Categoria.idcat.in_({p.idcat for _, p in found.values()})))}
+        catalogo._scoped(db, select(Categoria).where(Categoria.idcat.in_({p.idcat for _, p in found.values()}))))}
     items = []
     for detail in detalles:
         pair = found.get(detail.idvar)
+        if pair is None and db.info.get("multitenant") is True:
+            raise DomainError(409, "reserva_no_disponible", "No se pudo consultar la reserva")
         variant, product = pair if pair else (None, None)
         items.append(ReservaItemDetalle(
             idDetalleRes=detail.iddetalleres, idVar=detail.idvar,
@@ -168,7 +172,7 @@ def liberar_vencidas(db, user_id: str, hoy, peer):
     PostgreSQL usa el procedimiento oficial. SQLite mantiene una implementación
     equivalente para las pruebas locales, ya que no implementa CALL.
     """
-    if is_postgresql(db):
+    if is_postgresql(db) and db.info.get("multitenant") is not True:
         anteriores = {row.nroreserva for row in
                       repository.reservas_en_estado(db, user_id, "vencida")}
         repository.vencer_con_procedimiento(db)
@@ -184,6 +188,15 @@ def liberar_vencidas(db, user_id: str, hoy, peer):
     # devolviendo la disponibilidad una sola vez.
     liberadas: set[int] = set()
     limite = datetime.now() - timedelta(hours=repository.MARGEN_HORAS)
+    if is_postgresql(db) and db.info.get("multitenant") is True:
+        # Match the canonical database clock/company margin, but never CALL the
+        # global expiry procedure with a request identity. Only this user's rows.
+        limite = db.scalar(text("SELECT CURRENT_TIMESTAMP::timestamp - "
+                                "make_interval(hours => horasmargenreserva) "
+                                "FROM empresa WHERE idemp=:tenant"),
+                           {"tenant": db.info.get("idemp") or 0})
+        if limite is None:
+            raise DomainError(401, "autenticacion_rechazada", "Empresa no disponible")
     for estado in ("pendiente", "confirmada"):
         for row in repository.reservas_en_estado(db, user_id, estado):
             locked = repository.locked_reserva(db, row.nroreserva)

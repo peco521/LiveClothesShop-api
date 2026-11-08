@@ -1,5 +1,5 @@
 from datetime import date, datetime, timedelta
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from app.core.database import is_postgresql
 from app.core.errors import DomainError
 from app.modules.cliente_experiencia_compra.shared.models.comercio import Pago, Reserva, Venta
@@ -30,30 +30,34 @@ ESTADOS_COBRO = ('confirmada', 'atendida')
 
 
 def expire(db, scope_id=None):
-    """CU22: vence reservas vencidas usando fecha + hora de atención + 3 horas.
-
-    En PostgreSQL la fuente de verdad es la PA `sp_marcar_reservas_vencidas`:
-    ella marca 'vencida' y libera la disponibilidad retenida una sola vez, así
-    que Python NO repite el proceso. El sustituto SQLite reproduce exactamente
-    la misma regla para las pruebas. No se vence una reserva sólo porque su
-    fecha sea anterior a hoy.
-    """
+    """Vence filas bloqueadas dentro del tenant y ámbito de sucursal de la sesión."""
     with transaction(db):
-        if is_postgresql(db):
+        if is_postgresql(db) and db.info.get('multitenant') is not True:
             # La PA es la fuente de verdad: marca 'vencida' y libera en SQL una sola vez.
             repo.vencer_con_procedimiento(db, MARGEN_HORAS)
             return
         limite = datetime.now() - timedelta(hours=MARGEN_HORAS)
-        query = select(Reserva).where(Reserva.estado.in_(['pendiente', 'confirmada'])
-                                      ).order_by(Reserva.nroreserva).with_for_update()
+        if is_postgresql(db) and db.info.get('multitenant') is True:
+            limite = db.scalar(text(
+                "SELECT CURRENT_TIMESTAMP::timestamp - "
+                "make_interval(hours => horasmargenreserva::integer) "
+                "FROM empresa WHERE idemp=:tenant"
+            ), {'tenant': db.info.get('idemp') or 0})
+            if limite is None:
+                raise DomainError(401, 'autenticacion_rechazada', 'Empresa no disponible')
+        query = (select(Reserva)
+                 .where(Reserva.estado.in_(['pendiente', 'confirmada']))
+                 .order_by(Reserva.nrosuc, Reserva.nroreserva)
+                 .with_for_update())
         if scope_id is not None:
             query = query.where(Reserva.nrosuc == scope_id)
         for row in db.scalars(query):
             if datetime.combine(row.fechareserva, row.horaatencion) >= limite:
-                continue  # Todavía vigente dentro del margen de atención.
+                continue
             release(db, row)
             row.estado = 'vencida'
-            record(db, 'reserva_vencida', None, None, True)
+            record(db, 'reserva_vencida', None, None, True,
+                   resource_id=str(row.nroreserva))
 
 
 def get(db, nro, scope_id, lock=False):
@@ -134,13 +138,19 @@ def listing(db, scope_id, estado, offset, limit):
 def update(db, nro, data, actor, scope_id, peer):
     with transaction(db):
         row = get(db, nro, scope_id, True)
+        if data.accion == 'confirmar' and row.estado == 'confirmada':
+            return detalle(db, row)
+        if data.accion == 'atender' and row.estado == 'atendida':
+            return detalle(db, row)
         if row.estado not in {'pendiente', 'confirmada'} or row.fechareserva < date.today():
             raise DomainError(409, 'reserva_no_gestionable', 'La reserva fue cancelada, atendida o venció; vuelve a consultar')
-        if venta_vinculada(db, nro) is not None:
-            raise DomainError(409, 'venta_en_curso', 'La reserva está vinculada a una venta; finaliza o cancela esa venta primero')
         if data.accion == 'reprogramar':
+            if venta_vinculada(db, nro) is not None:
+                raise DomainError(409, 'venta_en_curso', 'La reserva está vinculada a una venta; finaliza o cancela esa venta primero')
             if data.fechaReserva is None or data.horaAtencion is None or data.fechaReserva < date.today():
                 raise DomainError(422, 'datos_invalidos', 'Indica una fecha futura y una hora válidas')
+            if row.fechareserva == data.fechaReserva and row.horaatencion == data.horaAtencion:
+                return detalle(db, row)
             client._validar_horario(db, row.nrosuc, data.horaAtencion, data.fechaReserva)
             row.fechareserva, row.horaatencion = data.fechaReserva, data.horaAtencion
         else:
@@ -149,12 +159,18 @@ def update(db, nro, data, actor, scope_id, peer):
                 if sum(r.stock for r in rows) < detail.cantidad:
                     raise DomainError(409, 'inventario_inconsistente', 'La prenda reservada ya no está físicamente disponible')
             if data.accion == 'confirmar':
+                if venta_vinculada(db, nro) is not None:
+                    raise DomainError(409, 'venta_en_curso', 'La reserva está vinculada a una venta; finaliza o cancela esa venta primero')
                 row.estado = 'confirmada'
             else:
                 if row.estado != 'confirmada':
                     raise DomainError(409, 'reserva_no_confirmada', 'Confirma la preparación de las prendas antes de atender')
-                release(db, row)
+                _, paid = estado_cobro(db, nro)
+                if paid is None:
+                    raise DomainError(409, 'reserva_no_cobrada',
+                                      'La reserva se convierte en venta al aprobarse el pago en CU24')
                 row.estado = 'atendida'
-        record(db, 'reserva_' + data.accion, actor, peer, True)
+        record(db, 'reserva_' + data.accion, actor, peer, True,
+               resource_id=str(row.nroreserva))
         db.flush()
         return detalle(db, row)

@@ -334,3 +334,53 @@ def test_permission_revocation_is_immediate(client, operator, factory):
     for path in (BASE, BASE + "/1"):
         response = client.get(path)
         assert response.status_code == 403 and response.headers["Cache-Control"] == "no-store"
+
+
+@pytest.mark.parametrize("tenant", [1, 2])
+def test_tenant_repository_scopes_detail_filters_counts_and_pages(factory, tenant):
+    own = [seed(factory, idemp=tenant) for _ in range(3)]
+    foreign = seed(factory, idemp=3 - tenant)
+    legacy = seed(factory)  # NULL tenant is not an enterprise event.
+    with factory() as db:
+        db.info.update(multitenant=True, idemp=tenant)
+        result = service.list_events(db, BitacoraFiltros(accion="rol_creado", offset=1, limit=1))
+        assert result.total == 3 and [row.id for row in result.items] == [own[1]]
+        assert service.detail(db, int(own[0])).id == own[0]
+        for event_id in (foreign, legacy):
+            with pytest.raises(DomainError) as error:
+                service.detail(db, int(event_id))
+            assert error.value.status == 404
+        assert service.list_events(db, BitacoraFiltros(offset=100)).total == 3
+
+
+def test_tenant_hides_foreign_actor_even_in_malformed_historical_event(factory, operator):
+    with factory.begin() as db:
+        db.get(Usuario, operator).idemp = 2
+    malformed = seed(factory, idemp=1, usuario_id=operator,
+                     detalles={"resultado": "exito", "idUsuario": operator, "token": "synthetic-secret"})
+    with factory() as db:
+        db.info.update(multitenant=True, idemp=1)
+        result = service.detail(db, int(malformed))
+        assert result.usuario_id is None and result.detalles.model_dump() == {"resultado": "exito"}
+        assert "synthetic-secret" not in result.model_dump_json()
+        assert service.list_events(db, BitacoraFiltros(usuario_id=operator)).total == 0
+        assert service.list_events(db, BitacoraFiltros()).items[0].usuario_id is None
+
+
+def test_tenant_repository_without_context_is_closed(factory):
+    seed(factory, idemp=1)
+    with factory() as db:
+        db.info["multitenant"] = True
+        assert service.list_events(db, BitacoraFiltros()).total == 0
+
+
+def test_cu08_allowlist_does_not_open_other_modules(settings, factory):
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+
+    config = settings.model_copy(update={"multitenant_enabled": True, "multitenant_modules": "cu08"})
+    with TestClient(create_app(config, factory), raise_server_exceptions=False) as client:
+        assert client.get(BASE).status_code == 401
+        for path in (BASE + "-other", "/api/admin/clientes", "/api/catalogo",
+                     "/api/admin/inventario", "/api/admin/reportes", "/api/saas/auditoria"):
+            assert client.get(path).status_code == 503

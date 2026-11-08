@@ -1,7 +1,7 @@
 from datetime import date, datetime, time
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Integer, Numeric, SmallInteger, String, Time, func
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Integer, Numeric, SmallInteger, String, Time, func, text
 from sqlalchemy.orm import Mapped, deferred, mapped_column
 
 from app.core.database import Base
@@ -9,6 +9,8 @@ from app.core.database import Base
 
 class Reserva(Base):
     __tablename__ = "reserva"
+    __mapper_args__ = {"eager_defaults": False}
+    idemp: Mapped[int | None] = deferred(mapped_column(Integer, server_default="NULL"))
     __table_args__ = (CheckConstraint("estado IN ('pendiente', 'confirmada', 'atendida', 'cancelada', 'vencida')"),)
 
     nroreserva: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -21,6 +23,8 @@ class Reserva(Base):
 
 class DetalleReserva(Base):
     __tablename__ = "detallereserva"
+    __mapper_args__ = {"eager_defaults": False}
+    idemp: Mapped[int | None] = deferred(mapped_column(Integer, server_default="NULL"))
     __table_args__ = (CheckConstraint("cantidad > 0"),)
 
     nroreserva: Mapped[int] = mapped_column(ForeignKey("reserva.nroreserva", onupdate="CASCADE", ondelete="CASCADE"),
@@ -55,6 +59,8 @@ class HorarioSuc(Base):
 
 class Carrito(Base):
     __tablename__ = "carrito"
+    __mapper_args__ = {"eager_defaults": False}
+    idemp: Mapped[int | None] = deferred(mapped_column(Integer, server_default="NULL"))
     __table_args__ = (CheckConstraint("estado IN ('activo', 'convertido', 'abandonado')"),)
 
     idcarrito: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -65,6 +71,8 @@ class Carrito(Base):
 
 class DetalleCarro(Base):
     __tablename__ = "detallecarro"
+    __mapper_args__ = {"eager_defaults": False}
+    idemp: Mapped[int | None] = deferred(mapped_column(Integer, server_default="NULL"))
     __table_args__ = (CheckConstraint("cantidad > 0"),)
 
     idcarrito: Mapped[int] = mapped_column(ForeignKey("carrito.idcarrito", onupdate="CASCADE", ondelete="CASCADE"),
@@ -76,6 +84,8 @@ class DetalleCarro(Base):
 
 class Venta(Base):
     __tablename__ = "venta"
+    __mapper_args__ = {'eager_defaults':False}
+    idemp: Mapped[int | None] = deferred(mapped_column(Integer, server_default=text('NULL')))
     __table_args__ = (
         CheckConstraint("total >= 0"),
         CheckConstraint("desc_aplicado >= 0"),
@@ -97,11 +107,12 @@ class Venta(Base):
     nroreserva: Mapped[int | None] = mapped_column(ForeignKey("reserva.nroreserva", onupdate="CASCADE", ondelete="CASCADE"))
     # CU24 conserva la columna legada mientras no se migren sus datos a
     # idOperacion UUID en el esquema SaaS (cuya caja sigue deshabilitada).
-    claveoperacion: Mapped[str | None] = mapped_column(String(36), unique=True)
+    claveoperacion: Mapped[str | None] = deferred(mapped_column(String(36), unique=True, server_default=text('NULL')))
 
 
 class DetalleVenta(Base):
     __tablename__ = "detalleventa"
+    idemp: Mapped[int | None] = deferred(mapped_column(Integer, server_default=text('NULL')))
     __table_args__ = (
         CheckConstraint("precioUnitario > 0"),
         CheckConstraint("cantidad > 0"),
@@ -112,12 +123,19 @@ class DetalleVenta(Base):
     iddetalleventa: Mapped[int] = mapped_column(Integer, primary_key=True)
     preciounitario: Mapped[Decimal] = mapped_column(Numeric(10, 2))
     descuentounitario: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    diasdevolucionaplicado: Mapped[int | None] = deferred(
+        mapped_column(Integer, server_default=text('NULL')))
+    porcentajedevolucionaplicado: Mapped[Decimal | None] = deferred(
+        mapped_column(Numeric(5, 2), server_default=text('NULL')))
+    condicionesdevolucionaplicadas: Mapped[str | None] = deferred(
+        mapped_column(String, server_default=text('NULL')))
     cantidad: Mapped[int] = mapped_column(Integer)
     idvar: Mapped[str] = mapped_column(ForeignKey("varianteprod.idvariante", onupdate="CASCADE", ondelete="CASCADE"))
 
 
 class MovimientoInv(Base):
     __tablename__ = "movimiento_inv"
+    idemp: Mapped[int | None] = deferred(mapped_column(Integer, server_default=text('NULL')))
     __table_args__ = (CheckConstraint("tipoMov IN ('entrada', 'salida', 'ajuste')"),)
 
     idmov: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -130,6 +148,7 @@ class MovimientoInv(Base):
 
 class Pago(Base):
     __tablename__ = "pago"
+    idemp: Mapped[int | None] = deferred(mapped_column(Integer, server_default=text('NULL')))
     __table_args__ = (
         CheckConstraint("metodo IN ('tarjeta', 'QR', 'transferencia', 'efectivo')"),
         CheckConstraint("monto >= 0"),

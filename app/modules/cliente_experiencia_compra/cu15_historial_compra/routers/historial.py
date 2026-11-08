@@ -9,7 +9,7 @@ from app.modules.cliente_experiencia_compra.cu15_historial_compra.schemas.histor
     HistorialCompras,
 )
 from app.modules.cliente_experiencia_compra.cu15_historial_compra.services import historial as service
-from app.modules.cliente_experiencia_compra.shared.dependencies import require_cliente
+from app.modules.cliente_experiencia_compra.shared.dependencies import require_cliente_context as require_cliente
 
 router = APIRouter(
     prefix="/api/cliente/historial-compras",

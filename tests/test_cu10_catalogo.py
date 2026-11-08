@@ -24,6 +24,56 @@ from app.modules.seguridad_accesos.shared.models import Ciudad, Sucursal
 BASE = "/api/catalogo/productos"
 
 
+def test_repository_tenant_defense_without_rls(factory, catalog):
+    from sqlalchemy import select
+    from app.modules.cliente_experiencia_compra.shared.repositories import catalogo as repo
+    from app.modules.cliente_experiencia_compra.cu10_consultar_prendas.services import catalogo as service
+    from app.modules.cliente_experiencia_compra.cu10_consultar_prendas.schemas.catalogo import CatalogoFiltros
+
+    models = (Categoria, Coleccion, Color, Inventario, Marca, Producto, Promocion,
+              Proveedor, Talla, TempColeccion, Temporada, VarianteColor, VarianteProd, Ciudad, Sucursal)
+    with factory.begin() as db:
+        for model in models:
+            for row in db.scalars(select(model)):
+                row.idemp = 1
+        db.add(Talla(idtalla=99, descripcion="FOREIGN", idemp=2))
+        db.add(Marca(idmarca=99, nombre="FOREIGN", estado="activo", idemp=2))
+        db.flush()
+        # SQLite deliberately permits malformed tenant references. These must
+        # not leak even without the composite FKs/RLS of PostgreSQL.
+        db.add(Producto(idprod="foreign-prod", descripcion="FOREIGN", estado="activo",
+                        idcat=1, idmarca=1, idcol=1, idprov=1, idemp=2))
+        db.add(VarianteProd(idvariante="foreign-var", sku="FOREIGN", precio=999,
+                            idtalla=99, idprod="prod-001", estado="activo", idemp=2))
+        db.add(Inventario(nroinv=99, stock=999, cantdisp=999, nrosuc=1, idvar="var-001", idemp=2))
+    with factory() as db:
+        db.info.update(multitenant=True, idemp=1)
+        rows, total = repo.list_products(db, limit=1)
+        assert total == 2 and len(rows) == 1
+        assert repo.get_product(db, "foreign-prod") is None
+        assert repo.get_variant(db, "foreign-var") is None
+        assert repo.list_products(db, idTalla=99)[1] == 0
+        assert repo.list_products(db, minPrecio=999)[1] == 0
+        assert repo.availability_totals(db, ["prod-001"]) == {"prod-001": 4}
+        assert {r.idtalla for r in repo.facets(db)["tallas"]} == {1, 2}
+        assert {r.idmarca for r in repo.facets(db)["marcas"]} == {1}
+        detail = service.product_detail(db, "prod-001")
+        assert {v.idVariante for v in detail.variantes} == {"var-001", "var-002"}
+        assert sum(r.cantDisp for r in detail.disponibilidad) == 4
+        assert service.list_products(db, CatalogoFiltros()).total == 2
+        db.info.pop("idemp")
+        assert repo.list_products(db)[1] == 0
+        assert repo.facets(db)["categorias"] == []
+
+
+def test_closed_branch_stock_does_not_make_product_available(client, customer, factory):
+    with factory.begin() as db:
+        db.get(Inventario, 1).cantdisp = 0
+    response = client.get(BASE, params={"idCat": 1})
+    assert response.status_code == 200 and response.json()["items"][0]["disponible"] is False
+    assert client.get(BASE, params={"idCat": 1, "soloDisponibles": True}).json()["total"] == 0
+
+
 @pytest.fixture
 def catalog(factory):
     # NOTA: seeding por niveles con flush intermedio. Un único flush

@@ -209,6 +209,9 @@ def leer_entorno() -> tuple[str, str]:
             raise SystemExit(
                 "Por seguridad el seed solo acepta 127.0.0.1:55432/fashionstore_test; "
                 "no se ejecuta contra Supabase ni otra base.")
+    if (make_url(app_url).username != "fashionstore_app"
+            or make_url(platform_url).username != "fashionstore_provisioner"):
+        raise SystemExit("El seed requiere los roles HTTP y plataforma diferenciados.")
     return app_url, platform_url
 
 

@@ -8,7 +8,7 @@ from app.modules.cliente_experiencia_compra.cu12_carrito.schemas.carrito import 
     ItemCantidad,
 )
 from app.modules.cliente_experiencia_compra.cu12_carrito.services import carrito as service
-from app.modules.cliente_experiencia_compra.shared.dependencies import require_cliente
+from app.modules.cliente_experiencia_compra.shared.dependencies import require_cliente_context as require_cliente
 
 router = APIRouter(prefix="/api/cliente/carrito", tags=["Carrito"],
                    dependencies=[Depends(require_cliente)])

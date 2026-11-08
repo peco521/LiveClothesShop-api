@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from decimal import Decimal
 
 from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy import text
 
 from app.core.database import is_postgresql, sqlstate
 from app.core.errors import DomainError
@@ -36,6 +37,14 @@ def _permitir_edicion(db, user_id, peer):
     if repository.locked_cliente(db, user_id) is None:
         raise DomainError(403, "acceso_denegado", "No tiene autorización para esta operación")
     cart = repository.locked_active_cart(db, user_id)
+    if db.info.get("multitenant") is True:
+        # A SaaS cart edit has no authority to cancel a sale or inspect/confirm
+        # payment; explicitly cancel its pending checkout before editing it.
+        if cart and db.scalar(text("SELECT 1 FROM venta WHERE idemp=:tenant "
+                                   "AND idcarrito=:cart AND estado='registrada' LIMIT 1"),
+                              {"tenant": db.info.get("idemp") or 0, "cart": cart.idcarrito}):
+            raise DomainError(409, "compra_en_curso", "El carrito tiene una compra en curso")
+        return
     venta = venta_repo.locked_registrada_por_carrito(db, cart.idcarrito) if cart else None
     if venta:
         # El resumen sin pago es reemplazable; el carrito permanece activo.
@@ -145,6 +154,11 @@ def agregar(db, data: ItemAgregar, user_id: str, peer):
         variant, _ = _variante_activa(db, data.idVar)
         if is_postgresql(db):
             cart_previo = repository.active_cart(db, user_id)
+            if db.info.get("multitenant") is True:
+                previous = repository.detail_by_variant(db, cart_previo.idcarrito, variant.idvariante) if cart_previo else None
+                requested = data.cantidad + (previous.cantidad if previous else 0)
+                if requested > comercio_repo.disponibilidad_global(db, [variant.idvariante]).get(variant.idvariante, 0):
+                    raise DomainError(409, "disponibilidad_insuficiente", "No hay disponibilidad suficiente para esta prenda")
             ya_existia = (cart_previo is not None and
                           repository.detail_by_variant(
                               db, cart_previo.idcarrito, variant.idvariante) is not None)
