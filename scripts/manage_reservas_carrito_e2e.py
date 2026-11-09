@@ -13,7 +13,7 @@ def main():
     parser.add_argument("action", choices=("prepare", "verify", "cleanup"))
     parser.add_argument("--manifest")
     args = parser.parse_args()
-    _, platform_url = read_test_urls()
+    _, platform_url, _, _ = read_test_urls()
     engine = create_engine(platform_url, hide_parameters=True)
     local = ROOT / ".local"
     try:

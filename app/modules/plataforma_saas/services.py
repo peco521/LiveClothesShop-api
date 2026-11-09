@@ -1,5 +1,6 @@
 import json
 from ipaddress import ip_address
+from datetime import date, timedelta
 
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -43,7 +44,13 @@ EMPRESA_QUERY = """
 SELECT e.idEmp AS "idEmp", e.codigo, e.nombre, e.estado,
        e.logoUrl AS "logoUrl", e.colorPrimario AS "colorPrimario",
        e.colorSecundario AS "colorSecundario", e.esDemostracion AS "esDemostracion",
-       p.idPlan AS "idPlan", p.nombre AS plan, p.maxSucursales AS "maxSucursales",
+       p.idPlan AS "idPlan", p.nombre AS plan,
+       CASE
+         WHEN s.estado = 'activa'
+          AND current_date BETWEEN s.fechaInicio AND s.fechaVencimiento
+         THEN fn_max_sucursales(e.idEmp)
+         ELSE p.maxSucursales
+       END AS "maxSucursales",
        s.estado AS "suscripcionEstado", s.fechaInicio AS "fechaInicio",
        s.fechaVencimiento AS "fechaVencimiento",
        (SELECT count(*)::integer FROM sucursal su
@@ -177,14 +184,76 @@ def uso_sucursales(db, idemp: int):
     return {"usadas": row[0] if row else 0, "limite": row[1] if row else 0}
 
 
-def listar_auditoria(db, limite: int = 100):
+def listar_auditoria(db, limite: int = 100, desplazamiento: int = 0,
+                     accion: str | None = None):
     rows = db.execute(text("""
         SELECT id, accion, usuario_id, fecha, detalles
-        FROM bitacora WHERE idemp IS NULL
-        ORDER BY fecha DESC, id DESC LIMIT :limite
-    """), {"limite": limite}).mappings().all()
+        FROM bitacora
+        WHERE idemp IS NULL
+          AND (CAST(:accion AS varchar) IS NULL OR accion = CAST(:accion AS varchar))
+        ORDER BY fecha DESC, id DESC LIMIT :limite OFFSET :desplazamiento
+    """), {"limite": limite, "desplazamiento": desplazamiento, "accion": accion}).mappings().all()
     return [{"id": row["id"], "accion": row["accion"], "usuarioId": row["usuario_id"],
-             "fecha": row["fecha"].isoformat(), "detalles": row["detalles"]} for row in rows]
+             "fecha": row["fecha"].isoformat(), "detalles": _sanear_detalles_auditoria(row["detalles"])}
+            for row in rows]
+
+
+def _sanear_detalles_auditoria(value):
+    """Publica solo atributos técnicos aprobados; omite texto libre y secretos."""
+    if not isinstance(value, dict):
+        return None
+    allowed = {"idEmp", "codigo", "idPlan", "estado", "idRespaldo", "destino"}
+    return {
+        key: item
+        for key, item in value.items()
+        if key in allowed and isinstance(item, (str, int, bool, type(None)))
+        and (not isinstance(item, str) or len(item) <= 150)
+    }
+
+
+def obtener_resumen(db, incluir_auditoria: bool = False):
+    hoy = date.today()
+    limite_proximo = hoy + timedelta(days=30)
+    empresas = db.execute(text("""
+        SELECT count(*) AS total,
+               count(*) FILTER (WHERE estado = 'activa') AS activas,
+               count(*) FILTER (WHERE estado = 'suspendida') AS suspendidas,
+               count(*) FILTER (WHERE estado = 'inactiva') AS inactivas
+        FROM empresa
+    """)).mappings().one()
+    suscripciones = db.execute(text("""
+        SELECT count(*) FILTER (
+                   WHERE estado = 'activa'
+                     AND fechaInicio <= :hoy AND fechaVencimiento >= :hoy
+               ) AS vigentes,
+               count(*) FILTER (
+                   WHERE estado = 'vencida'
+                      OR (estado = 'activa' AND fechaVencimiento < :hoy)
+               ) AS vencidas,
+               count(*) FILTER (
+                   WHERE estado = 'activa' AND fechaVencimiento BETWEEN :hoy AND :limite
+               ) AS proximasAVencer
+        FROM suscripcion
+    """), {"hoy": hoy, "limite": limite_proximo}).mappings().one()
+    planes = db.execute(text("""
+        SELECT p.nombre, count(*) AS suscripciones
+        FROM suscripcion s
+        JOIN plan p ON p.idPlan = s.idPlan
+        WHERE s.estado = 'activa'
+          AND s.fechaInicio <= :hoy AND s.fechaVencimiento >= :hoy
+        GROUP BY p.idPlan, p.nombre
+        ORDER BY p.nombre
+    """), {"hoy": hoy}).mappings().all()
+    sucursales = db.execute(text(
+        "SELECT count(*) FROM sucursal WHERE estado = 'activo'")).scalar_one()
+    return {
+        "empresas": dict(empresas),
+        "suscripciones": dict(suscripciones),
+        "distribucionPlanes": [dict(row) for row in planes],
+        "sucursalesActivas": sucursales,
+        "actividadReciente": listar_auditoria(db, 5) if incluir_auditoria else [],
+        "diasProximosAVencer": 30,
+    }
 
 
 def resumen_soporte(db, idemp: int, motivo: str, usuario: str, peer=None):

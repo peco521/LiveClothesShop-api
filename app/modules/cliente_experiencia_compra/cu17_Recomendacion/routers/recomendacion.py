@@ -27,3 +27,15 @@ def list_recommendations(
     # El cliente se toma siempre de la sesión: nunca se acepta un id del cliente
     # por parámetro, para que nadie consulte recomendaciones de terceros.
     return service.recomendar(db, identity.usuario.idUsuario, limit)
+
+
+@router.get("/ia", response_model=RecomendacionesRespuesta)
+def list_recommendations_ia(
+    limit: int = Query(service.RECOMENDACIONES_POR_DEFECTO,
+                       ge=service.RECOMENDACIONES_MINIMAS, le=service.RECOMENDACIONES_MAXIMAS),
+    db: Session = Depends(get_db),
+    identity=Depends(require_cliente),
+):
+    # Variante basada en el modelo local Qwen, con respaldo heurístico
+    # claramente diferenciado. El cliente se toma siempre de la sesión.
+    return service.recomendar_ia(db, identity.usuario.idUsuario, limit)

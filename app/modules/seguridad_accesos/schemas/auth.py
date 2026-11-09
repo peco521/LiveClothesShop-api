@@ -25,8 +25,14 @@ class Registro(PublicInput):
     direccion: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
     fechaNac: date
     contrasena: SecretStr = Field(min_length=12, max_length=128)
+    # Código de empresa para el registro público multitenant. El servidor lo resuelve
+    # a idEmp mediante auth_resolver_empresa; el cliente nunca envía idEmp, tipo ni rol.
+    empresa: Annotated[str | None, StringConstraints(strip_whitespace=True,
+                                                     pattern=r"^[a-z0-9-]{1,30}$")] = None
 
     _correo = field_validator("correo", mode="before")(normalize_email)
+    _empresa = field_validator("empresa", mode="before")(
+        lambda v: v.strip().lower() if isinstance(v, str) else v)
 
     @field_validator("contrasena")
     @classmethod
@@ -60,7 +66,12 @@ class LoginPlataforma(PublicInput):
 
 class RecuperarContrasena(PublicInput):
     correo: EmailStr = Field(max_length=100)
+    # Código de empresa para acotar la solicitud de recuperación al tenant correcto.
+    empresa: Annotated[str | None, StringConstraints(strip_whitespace=True,
+                                                     pattern=r"^[a-z0-9-]{1,30}$")] = None
     _correo = field_validator("correo", mode="before")(normalize_email)
+    _empresa = field_validator("empresa", mode="before")(
+        lambda v: v.strip().lower() if isinstance(v, str) else v)
 
 
 class RestablecerContrasena(PublicInput):

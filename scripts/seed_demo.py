@@ -275,6 +275,10 @@ def asegurar_plataforma(cur, passwords: Passwords, credenciales: dict) -> dict:
     """, (usuario, "SaaS-000", "Administrador", "Plataforma", "FashionStore", correo_admin,
           "70000000", "Oficina central FashionStore", passwords.hash(contrasena), date(1990, 1, 1)))
     # Permisos de plataforma: catálogo separado de CU05..CU25.
+    cur.execute(
+        "INSERT INTO funcion(id, descripcion) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING",
+        ("SAAS-RESPALDOS", "Solicitar y descargar respaldos de plataforma"),
+    )
     cur.execute("""
         INSERT INTO rol_funcion(nroRol, idFun, descripcion, idEmp)
         SELECT 'SAAS-ADMIN', f.id, f.descripcion, NULL FROM funcion f WHERE f.id LIKE 'SAAS-%%'
@@ -284,8 +288,11 @@ def asegurar_plataforma(cur, passwords: Passwords, credenciales: dict) -> dict:
         "rol": "Administrador SaaS",
         "correo": correo_admin,
         "contrasena": contrasena,
-        "acceso": "/login/saas",
-        "permisos": ["SAAS-EMPRESAS", "SAAS-PLANES", "SAAS-AUDITORIA", "SAAS-DEMO", "SAAS-SOPORTE"],
+        "acceso": "/saas/login",
+        "permisos": [
+            "SAAS-EMPRESAS", "SAAS-PLANES", "SAAS-AUDITORIA",
+            "SAAS-DEMO", "SAAS-SOPORTE", "SAAS-RESPALDOS",
+        ],
     }
 
 

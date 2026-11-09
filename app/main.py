@@ -45,6 +45,7 @@ from app.modules.ventas_reportes.cu25_reportes.routers.reportes import router as
 from app.modules.ventas_reportes.cu25_reportes.routers.dinamicos import router as cu25_dinamicos_router
 from app.modules.sincronizacion.routers import router as sync_router
 from app.modules.plataforma_saas.routers import router as plataforma_saas_router
+from app.modules.plataforma_saas.backups import PlatformBackupManager
 from app.modules.saas_suscripciones.planes_funcionalidades.routers.planes import router as saas_planes_router
 
 
@@ -96,6 +97,8 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
             # Do not print environment values from Pydantic's input diagnostics.
             raise RuntimeError("Configuración inválida: revise las variables de entorno requeridas") from None
         application.state.settings = config
+        backup_manager = PlatformBackupManager(config)
+        application.state.saas_backup_manager = backup_manager
         application.state.passwords = Passwords(config.password_storage)
         application.state.access_tokens = AccessTokens()
         # Pasarela de pago mock por defecto; inyectable en tests. Sin pasarelas reales.
@@ -139,7 +142,9 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
                     logging.getLogger(__name__).warning('No se pudo ejecutar el vencimiento de reservas; se reintentará')
                 await asyncio.sleep(60)
         # Global expiry must run under a separately authorized service identity.
-        expiry_task = asyncio.create_task(expire_reservations()) if config.environment != 'test' and not config.multitenant_enabled else None
+        # Se ejecuta en test y development para vencimiento autónomo de reservas
+        # entre peticiones; en production se controla por despliegue.
+        expiry_task = asyncio.create_task(expire_reservations()) if config.environment in ('test', 'development') else None
         owned_delivery = configured_gmail_delivery(config) if recovery_delivery is None else None
         application.state.recovery_delivery = recovery_delivery if recovery_delivery is not None else owned_delivery
         try:
@@ -153,6 +158,7 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
                     pass
             if owned_delivery is not None:
                 owned_delivery.close()
+            backup_manager.close()
             application.state.access_tokens.clear()
             if engine is not None:
                 engine.dispose()

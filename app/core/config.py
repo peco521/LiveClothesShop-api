@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     # BYPASSRLS y NO se usa nunca en las rutas HTTP de empresa. Si falta, las
     # rutas /api/saas responden 503 plataforma_no_configurada.
     platform_database_url: SecretStr | None = None
+    saas_backup_database_url: SecretStr | None = None
+    saas_backup_pg_dump_path: str = ""
+    saas_backup_retention_days: int = Field(default=14, ge=1, le=365)
+    saas_backup_max_storage_mb: int = Field(default=10240, ge=256, le=102400)
+    saas_backup_min_interval_minutes: int = Field(default=30, ge=0, le=1440)
+    saas_backup_timeout_minutes: int = Field(default=120, ge=1, le=1440)
     # Modo demostracion: habilita el endpoint de credenciales de prueba y la
     # carga de tenants de demostracion. Prohibido en produccion.
     demo_mode: bool = False
@@ -93,6 +99,24 @@ class Settings(BaseSettings):
                     raise ValueError
             except (ArgumentError, ValueError):
                 raise ValueError("PLATFORM_DATABASE_URL no tiene un formato válido") from None
+        if self.saas_backup_database_url is not None:
+            backup = self.saas_backup_database_url.get_secret_value()
+            try:
+                backup_url = make_url(backup)
+            except (ArgumentError, ValueError):
+                raise ValueError("SAAS_BACKUP_DATABASE_URL no tiene un formato válido") from None
+            if (self.environment != "test" or backup_url.host != "127.0.0.1"
+                    or backup_url.port != 55432 or backup_url.database != "fashionstore_test"
+                    or backup_url.username != "fashionstore_backup"
+                    or not backup_url.password
+                    or backup_url.drivername not in {"postgresql", "postgresql+psycopg"}):
+                raise ValueError(
+                    "SAAS_BACKUP_DATABASE_URL solo admite fashionstore_backup en "
+                    "127.0.0.1:55432/fashionstore_test y ENVIRONMENT=test")
+        if self.saas_backup_pg_dump_path:
+            dump_name = Path(self.saas_backup_pg_dump_path).name.lower()
+            if dump_name not in {"pg_dump", "pg_dump.exe"}:
+                raise ValueError("SAAS_BACKUP_PG_DUMP_PATH debe señalar a pg_dump")
         if self.environment == "production" and self.password_storage == "plaintext":
             raise ValueError("PASSWORD_STORAGE=plaintext solo está permitido en desarrollo o pruebas")
         if not self.database_url.get_secret_value().startswith("postgresql+psycopg://"):

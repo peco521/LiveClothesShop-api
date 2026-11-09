@@ -2,10 +2,12 @@ import json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.core.database import get_platform_db
 from app.core.errors import DomainError
+from app.modules.plataforma_saas.backups import PlatformBackupManager
 from app.modules.plataforma_saas import services
 from app.modules.plataforma_saas.dependencies import require_platform_permission
 from app.modules.plataforma_saas.schemas import (
@@ -20,6 +22,7 @@ PLANES = "SAAS-PLANES"
 AUDITORIA = "SAAS-AUDITORIA"
 DEMO = "SAAS-DEMO"
 SOPORTE = "SAAS-SOPORTE"
+RESPALDOS = "SAAS-RESPALDOS"
 
 
 def _peer(request):
@@ -38,6 +41,12 @@ def _credentials_path(request) -> Path:
 def listar_empresas(db: Session = Depends(get_platform_db),
                     identity=Depends(require_platform_permission(EMPRESAS))):
     return services.listar_empresas(db)
+
+
+@router.get("/resumen")
+def resumen_plataforma(db: Session = Depends(get_platform_db),
+                       identity=Depends(require_platform_permission(EMPRESAS))):
+    return services.obtener_resumen(db, AUDITORIA in identity.permisos)
 
 
 @router.get("/empresas/{idemp}", response_model=EmpresaResumen)
@@ -87,9 +96,11 @@ def uso_sucursales(idemp: int, db: Session = Depends(get_platform_db),
 
 @router.get("/auditoria")
 def listar_auditoria(limite: int = Query(default=100, ge=1, le=500),
+                     desplazamiento: int = Query(default=0, ge=0, le=100000),
+                     accion: str | None = Query(default=None, min_length=1, max_length=150),
                      db: Session = Depends(get_platform_db),
                      identity=Depends(require_platform_permission(AUDITORIA))):
-    return services.listar_auditoria(db, limite)
+    return services.listar_auditoria(db, limite, desplazamiento, accion)
 
 
 @router.post("/soporte/acceso")
@@ -120,3 +131,51 @@ def credenciales_demo(request: Request,
         raise DomainError(503, "credenciales_ilegibles",
                           "El archivo local de credenciales no se pudo leer") from None
     return contenido
+
+
+@router.get("/respaldos")
+def listar_respaldos(request: Request,
+                     identity=Depends(require_platform_permission(RESPALDOS))):
+    manager: PlatformBackupManager = request.app.state.saas_backup_manager
+    return {"configuracion": manager.configuration(), "respaldos": manager.list_jobs()}
+
+
+@router.post("/respaldos", status_code=202)
+def solicitar_respaldo(request: Request, db: Session = Depends(get_platform_db),
+                       identity=Depends(require_platform_permission(RESPALDOS))):
+    manager: PlatformBackupManager = request.app.state.saas_backup_manager
+    job = manager.prepare_job()
+    try:
+        with db.begin():
+            services.auditar(
+                db, identity.usuario.idUsuario, "respaldo_plataforma_solicitado",
+                {"idRespaldo": job["id"], "destino": "fashionstore_test"}, _peer(request),
+            )
+    except Exception:
+        manager.abort_job(job["id"])
+        raise
+    return manager.start_job(job["id"])
+
+
+@router.get("/respaldos/{backup_id}")
+def obtener_respaldo(backup_id: str, request: Request,
+                     identity=Depends(require_platform_permission(RESPALDOS))):
+    manager: PlatformBackupManager = request.app.state.saas_backup_manager
+    return manager.get_job(backup_id)
+
+
+@router.get("/respaldos/{backup_id}/descarga")
+def descargar_respaldo(backup_id: str, request: Request,
+                       db: Session = Depends(get_platform_db),
+                       identity=Depends(require_platform_permission(RESPALDOS))):
+    manager: PlatformBackupManager = request.app.state.saas_backup_manager
+    path = manager.download_path(backup_id)
+    with db.begin():
+        services.auditar(
+            db, identity.usuario.idUsuario, "respaldo_plataforma_descargado",
+            {"idRespaldo": backup_id}, _peer(request),
+        )
+    return FileResponse(
+        path, media_type="application/octet-stream",
+        filename=f"fashionstore-backup-{backup_id}.dump",
+    )

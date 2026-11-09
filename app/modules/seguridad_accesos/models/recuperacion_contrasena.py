@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Identity, Index, Integer, String, func
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Identity, Index, Integer, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -16,6 +16,7 @@ class RecuperacionContrasena(Base):
         Index("recuperacion_contrasena_expira_en_idx", "expira_en"),
     )
     id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), Identity(always=True), primary_key=True)
+    idemp: Mapped[int | None] = mapped_column(Integer, nullable=True, server_default=text("NULL"))
     usuario_id: Mapped[str] = mapped_column(ForeignKey("usuario.idusuario", onupdate="CASCADE", ondelete="RESTRICT"))
     token_digest: Mapped[str] = mapped_column(String(64), unique=True)
     creada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

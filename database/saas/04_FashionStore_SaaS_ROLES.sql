@@ -5,10 +5,12 @@
 --   fashionstore_owner        propietario del esquema (DDL). NO se usa para HTTP.
 --   fashionstore_provisioner  aprovisionamiento y panel SaaS. BYPASSRLS explicito.
 --   fashionstore_app          peticiones HTTP de empresa. NOBYPASSRLS, nunca owner.
+--   fashionstore_backup       lectura completa para pg_dump DE PRUEBAS; no escribe ni crea roles.
 --
 -- Las contrasenas NO se escriben en este archivo: se reciben como variables de
 -- psql generadas localmente por 00_preparar_postgres_pruebas.ps1.
 \set ON_ERROR_STOP on
+\getenv backup_password FASHIONSTORE_BACKUP_PASSWORD
 
 DO $$
 BEGIN
@@ -21,14 +23,19 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='fashionstore_provisioner') THEN
     CREATE ROLE fashionstore_provisioner LOGIN;
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='fashionstore_backup') THEN
+    CREATE ROLE fashionstore_backup LOGIN;
+  END IF;
 END $$;
 
 ALTER ROLE fashionstore_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
 ALTER ROLE fashionstore_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT;
 ALTER ROLE fashionstore_provisioner LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE BYPASSRLS NOINHERIT;
+ALTER ROLE fashionstore_backup LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE BYPASSRLS NOINHERIT;
 
 ALTER ROLE fashionstore_app PASSWORD :'app_password';
 ALTER ROLE fashionstore_provisioner PASSWORD :'provisioner_password';
+ALTER ROLE fashionstore_backup PASSWORD :'backup_password';
 
 REVOKE ALL ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO fashionstore_app, fashionstore_provisioner;
@@ -105,6 +112,16 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO fashionst
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO fashionstore_provisioner;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO fashionstore_provisioner;
 GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA public TO fashionstore_provisioner;
+
+-- pg_dump usa una identidad separada: solo lectura y solo configurada por el
+-- backend para la base fashionstore_test. No es propietaria ni crea objetos.
+GRANT USAGE ON SCHEMA public TO fashionstore_backup;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO fashionstore_backup;
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO fashionstore_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE fashionstore_owner IN SCHEMA public
+  GRANT SELECT ON TABLES TO fashionstore_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE fashionstore_owner IN SCHEMA public
+  GRANT SELECT ON SEQUENCES TO fashionstore_backup;
 
 -- Resolucion de codigo->empresa antes del contexto de tenant: la ejecuta el
 -- rol HTTP, pero su propietario debe poder leer sin RLS.

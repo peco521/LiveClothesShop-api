@@ -6,7 +6,7 @@
 #   3. Aplica 01, 02 y 03 (creacion + parches del esquema SaaS NUEVO).
 #   4. Aplica 001_versiones_planes.sql antes de los grants del rol HTTP.
 #   5. Genera contrasenas locales para los roles de base de datos.
-#   6. Aplica 04 (roles y permisos minimos).
+#   6. Aplica 04 (roles y permisos minimos, incluido el lector de pg_dump).
 #   7. Escribe .local/backend.env con las cadenas de conexion.
 #
 # Que NO hace:
@@ -159,15 +159,30 @@ Get-Content $rolesEnv | Where-Object { $_ -match '^\s*([A-Z_]+)\s*=\s*(\S+)\s*$'
 }
 $appPassword = $vars['FASHIONSTORE_APP_PASSWORD']
 $provisionerPassword = $vars['FASHIONSTORE_PROVISIONER_PASSWORD']
+$backupPassword = $vars['FASHIONSTORE_BACKUP_PASSWORD']
 if (-not $appPassword -or -not $provisionerPassword) { throw "Faltan contrasenas en $rolesEnv" }
+if (-not $backupPassword) {
+  $backupPassword = New-TestPassword
+  Add-Content -Path $rolesEnv -Value "FASHIONSTORE_BACKUP_PASSWORD=$backupPassword" -Encoding UTF8
+}
 
 # --- 6. Roles y permisos ----------------------------------------------
 Write-Host 'Aplicando 04_FashionStore_SaaS_ROLES.sql'
-Invoke-Psql -Database $DbName -Arguments @(
-  '-v', "app_password=$appPassword",
-  '-v', "provisioner_password=$provisionerPassword",
-  '-f', (Join-Path $sqlDir '04_FashionStore_SaaS_ROLES.sql')
-)
+$previousBackupPassword = $env:FASHIONSTORE_BACKUP_PASSWORD
+try {
+  $env:FASHIONSTORE_BACKUP_PASSWORD = $backupPassword
+  Invoke-Psql -Database $DbName -Arguments @(
+    '-v', "app_password=$appPassword",
+    '-v', "provisioner_password=$provisionerPassword",
+    '-f', (Join-Path $sqlDir '04_FashionStore_SaaS_ROLES.sql')
+  )
+} finally {
+  if ($null -eq $previousBackupPassword) {
+    Remove-Item Env:\FASHIONSTORE_BACKUP_PASSWORD -ErrorAction SilentlyContinue
+  } else {
+    $env:FASHIONSTORE_BACKUP_PASSWORD = $previousBackupPassword
+  }
+}
 
 # --- 6.1 Devoluciones y cambios CU23 -------------------------------
 Write-Host 'Aplicando 05_cu23_devoluciones_cambios.sql'
@@ -182,7 +197,10 @@ Invoke-Psql -Database $DbName -Arguments @(
   '# Rol HTTP de empresa: NOBYPASSRLS, sin propiedad de tablas.',
   "TEST_DATABASE_URL=postgresql+psycopg://fashionstore_app:$appPassword@127.0.0.1:$Port/$DbName",
   '# Rol de plataforma/aprovisionamiento: BYPASSRLS, solo panel SaaS.',
-  "TEST_PLATFORM_DATABASE_URL=postgresql+psycopg://fashionstore_provisioner:$provisionerPassword@127.0.0.1:$Port/$DbName"
+  "TEST_PLATFORM_DATABASE_URL=postgresql+psycopg://fashionstore_provisioner:$provisionerPassword@127.0.0.1:$Port/$DbName",
+  '# Rol lector de solo lectura para pg_dump local.',
+  "TEST_BACKUP_DATABASE_URL=postgresql+psycopg://fashionstore_backup:$backupPassword@127.0.0.1:$Port/$DbName",
+  "TEST_BACKUP_PG_DUMP_PATH=$(Join-Path $PgBin 'pg_dump.exe')"
 ) | Set-Content -Path $backendEnv -Encoding UTF8
 
 Write-Host ''

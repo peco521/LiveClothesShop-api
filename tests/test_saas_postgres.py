@@ -48,7 +48,10 @@ ENV_PRUEBAS = RAIZ.parent / ".local" / "backend.env"
 CREDENCIALES = RAIZ / ".local" / "demo_credentials.json"
 
 EMPRESAS = ("manaco", "kosy-pantalones", "urbanwomen", "kosy-prendas", "lupo")
-PERMISOS_SAAS = {"SAAS-EMPRESAS", "SAAS-PLANES", "SAAS-AUDITORIA", "SAAS-DEMO", "SAAS-SOPORTE"}
+PERMISOS_SAAS = {
+    "SAAS-EMPRESAS", "SAAS-PLANES", "SAAS-AUDITORIA",
+    "SAAS-DEMO", "SAAS-SOPORTE", "SAAS-RESPALDOS",
+}
 CABECERAS = {"Origin": "http://localhost:4200", "X-CSRF-Protection": "1"}
 
 

@@ -3,7 +3,7 @@ from time import monotonic, sleep
 from datetime import timedelta
 from uuid import uuid4
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.core.database import is_postgresql, tenant_context
@@ -20,21 +20,68 @@ def authentication_failed():
     return DomainError(401, "autenticacion_rechazada", "No se pudo autenticar la solicitud")
 
 
+def resolver_idemp_empresa(db, settings, codigo_empresa):
+    """Resuelve el código de empresa a idEmp (tenant) sin aceptar idEmp del cliente.
+
+    Solo aplica en modo multitenant. La empresa debe estar activa con una suscripción
+    vigente ("empresa elegible"); auth_resolver_empresa devuelve NULL en caso
+    contrario. En PostgreSQL se valida mediante la función restringida SECURITY
+    DEFINER; el cliente nunca envía ni el servidor acepta un idEmp arbitrario.
+    """
+    if not settings.multitenant_enabled:
+        return None
+    codigo = str(codigo_empresa or "").strip().lower()
+    if not codigo:
+        raise DomainError(422, "empresa_requerida",
+                          "Se requiere el código de empresa para el registro público")
+    if is_postgresql(db):
+        idemp = db.scalar(text("SELECT auth_resolver_empresa(:codigo)"),
+                          {"codigo": codigo})
+        if idemp is None:
+            raise DomainError(403, "empresa_no_elegible",
+                              "La empresa no está disponible para el registro público")
+        return int(idemp)
+    # Sin PostgreSQL no existe la función de resolución: el registro público
+    # multitenant requiere la base oficial.
+    raise DomainError(503, "registro_no_disponible",
+                      "El registro público multitenant requiere PostgreSQL")
+
+
+def public_client_role_tenant(db, idemp: int):
+    """Rol cliente del tenant (E{idemp}-CLI): activo y vinculado al tenant resuelto.
+
+    Coherente con el rol que ya usa el login de cliente
+    (cliente_rol_id = E{idemp}-CLI). El registro público asigna este rol desde el
+    servidor; el cliente nunca elige rol, tipo ni tenant desde el payload.
+    """
+    role = rol.get(db, f"E{idemp}-CLI")
+    if role is None or role.idemp != idemp or role.estado != "activo":
+        return None
+    return role
+
+
 def register(db, data, settings, passwords, peer, access_tokens):
     credential = None
     email = str(data.correo)
-    # Prepare the configured password representation before the write transaction.
     encoded = passwords.hash(data.contrasena.get_secret_value())
     user_id = str(uuid4())
     try:
         with db.begin():
+            idemp = resolver_idemp_empresa(db, settings, getattr(data, "empresa", None))
+            if db.info.get("multitenant"):
+                tenant_context(db, idemp)
+                db.info["empresa"] = str(data.empresa)
+                role = public_client_role_tenant(db, idemp)
+            else:
+                role = rol.public_role(db, settings.cliente_rol_id)
+            if role is None:
+                raise DomainError(503, "registro_no_disponible", "El registro no está disponible")
+            # Unicidad de correo por empresa (tenant de sesión), nunca global.
             if usuario.by_email(db, email):
                 raise DomainError(409, "correo_duplicado", "El correo ya está registrado")
-            if rol.public_role(db, settings.cliente_rol_id) is None:
-                raise DomainError(503, "registro_no_disponible", "El registro no está disponible")
             client_code = secrets.token_hex(5)
             usuario.create_client(db, user_id=user_id, data=data, password_hash=encoded,
-                                  role_id=settings.cliente_rol_id, client_code=client_code)
+                                  role_id=role.nro, client_code=client_code, idemp=idemp)
             record(db, "cliente_registrado", user_id, peer, True)
             # CU01: el registro público abre sesión con el mismo mecanismo que el
             # login (token en memoria + huella de la contraseña) y su misma auditoría.
@@ -44,16 +91,15 @@ def register(db, data, settings, passwords, peer, access_tokens):
             expires = utcnow() + timedelta(hours=settings.session_hours)
             response = RegistroResponse(idUsuario=user_id, correo=email,
                                         sesion=public_identity(db, account, expires))
-            credential = access_tokens.issue(account.idusuario, account.contrasena, expires)
+            credential = access_tokens.issue(account.idusuario, account.contrasena, expires,
+                                             db.info.get("idemp"))
     except IntegrityError:
         if credential is not None:
             access_tokens.revoke(credential)
-        # The transaction has rolled back, including a partially-created profile.
         if usuario.by_email(db, email):
             raise DomainError(409, "correo_duplicado", "El correo ya está registrado") from None
         raise DomainError(503, "registro_no_disponible", "No se pudo completar el registro") from None
     except Exception:
-        # Nunca dejar un acceso emitido si la operación no quedó confirmada.
         if credential is not None:
             access_tokens.revoke(credential)
         raise
@@ -65,6 +111,8 @@ def public_identity(db, user, expires):
     # CU06: un rol dado de baja no autoriza ninguna función. CU05/CU07: una
     # cuenta dada de baja no inicia sesión ni continúa con una sesión abierta.
     if role is None or role.estado != "activo" or usuario.account_blocked(db, user):
+        raise authentication_failed()
+    if db.info.get("multitenant") and (user.idemp != db.info.get("idemp") or role.idemp != user.idemp):
         raise authentication_failed()
     if user.tipo == "S":
         # Administrador de plataforma: idEmp NULL, rol SAAS-ADMIN y permisos
@@ -240,13 +288,16 @@ def logout(db, credential, peer, access_tokens):
     access_tokens.revoke(credential)
 
 
-def request_recovery(db, data, delivery, peer):
+def request_recovery(db, data, settings, delivery, peer):
     unavailable = DomainError(503, "recuperacion_no_disponible", "La recuperación de contraseña no está disponible")
     started = monotonic()
     token = new_credential()
     token_digest = digest(token)
     try:
         with db.begin():
+            idemp = resolver_idemp_empresa(db, settings, getattr(data, "empresa", None))
+            if db.info.get("multitenant"):
+                tenant_context(db, idemp)
             if delivery is None:
                 record(db, "recuperacion_solicitada", None, peer, False)
             else:
@@ -264,6 +315,8 @@ def request_recovery(db, data, delivery, peer):
 
 
 def _issue_recovery(db, data, delivery, peer, token, token_digest):
+    # by_email respeta el tenant de sesión: solo se recupera la cuenta de la empresa
+    # asociada al código validado, nunca cuentas de otra empresa con el mismo correo.
     matches = usuario.by_email(db, str(data.correo), lock=True)
     user = matches[0] if len(matches) == 1 else None
     now = utcnow()
@@ -281,13 +334,39 @@ def reset_password(db, data, passwords, peer):
     rejected = DomainError(400, "recuperacion_invalida", "El enlace no es válido o ha expirado")
     encoded = passwords.hash(data.nueva_contrasena.get_secret_value())
     with db.begin():
-        token = recovery.by_digest(db, digest(data.token.get_secret_value()))
-        if token is None:
-            raise rejected
+        # El token se busca por digest SIN contexto de tenant (el cliente no
+        # conoce su empresa al restablecer). En PostgreSQL usamos una función
+        # SECURITY DEFINER para obtener el idemp del token y fijar el contexto
+        # de tenant antes de cualquier operación protegida por RLS. En SQLite no
+        # hay RLS, así que se busca directamente por digest.
+        fila = None
+        if is_postgresql(db):
+            fila = db.execute(
+                text(
+                    "SELECT idemp, usuario_id FROM public.sp_recuperacion_token_por_digest(:digest)"
+                ),
+                {"digest": digest(data.token.get_secret_value())},
+            ).mappings().first()
+            if fila is None:
+                raise rejected
+            tenant_context(db, fila["idemp"])
+            token = recovery.by_digest(db, digest(data.token.get_secret_value()))
+        else:
+            # En SQLite no hay RLS: buscamos el token directamente por digest.
+            token = recovery.by_digest(db, digest(data.token.get_secret_value()))
+            if token is None:
+                raise rejected
+            fila = {"idemp": token.idemp, "usuario_id": token.usuario_id}
         # Same lock order as issuance and login. Conditional consume rechecks after waiting.
         user = usuario.locked(db, token.usuario_id)
-        now = utcnow()
-        if user is None or not recovery.consume(db, token.id, now):
+        if user is None:
+            raise rejected
+        # Comparación de expiración: aware en PostgreSQL (timestamptz), naive en SQLite.
+        if is_postgresql(db):
+            now = utcnow()
+        else:
+            now = utcnow().replace(tzinfo=None)
+        if not recovery.consume(db, token.id, now):
             raise rejected
         if is_postgresql(db):
             usuario.cambiar_contrasena(db, user.correo, encoded)

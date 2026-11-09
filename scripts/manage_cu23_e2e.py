@@ -15,7 +15,7 @@ LOCAL = ROOT / ".local"
 
 
 def _engine():
-    _, platform_url = read_test_urls()
+    _, platform_url, _, _ = read_test_urls()
     return create_engine(platform_url, hide_parameters=True)
 
 

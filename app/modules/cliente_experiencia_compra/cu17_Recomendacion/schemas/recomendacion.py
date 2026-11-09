@@ -15,6 +15,10 @@ from app.modules.cliente_experiencia_compra.cu10_consultar_prendas.schemas.catal
 )
 
 TipoRecomendacion = Literal["personalizada", "general"]
+# Origen de la recomendación: 'modelo' cuando la selección proviene del modelo
+# local de lenguaje; 'heuristico' cuando se usa el recomendador de reglas como
+# respaldo. Nunca se oculta el origen al cliente.
+TipoOrigen = Literal["modelo", "heuristico"]
 
 
 class RecomendacionItem(ProductoResumen):
@@ -33,3 +37,4 @@ class RecomendacionesRespuesta(BaseModel):
     mensaje: str
     total: int
     items: list[RecomendacionItem] = []
+    origen: TipoOrigen = "heuristico"

@@ -17,7 +17,7 @@ from app.core.config import Settings
 from app.main import create_app
 
 
-def read_test_urls() -> tuple[str, str]:
+def read_test_urls() -> tuple[str, str, str | None, str]:
     if not ENV_FILE.is_file():
         raise SystemExit("Falta el archivo local de configuración PostgreSQL de pruebas")
     values = {}
@@ -35,7 +35,15 @@ def read_test_urls() -> tuple[str, str]:
     if (make_url(app_url).username != "fashionstore_app"
             or make_url(platform_url).username != "fashionstore_provisioner"):
         raise SystemExit("La API de pruebas requiere los roles HTTP y plataforma diferenciados")
-    return app_url, platform_url
+    backup_url = values.get("TEST_BACKUP_DATABASE_URL") or None
+    dump_path = values.get("TEST_BACKUP_PG_DUMP_PATH", "")
+    if backup_url:
+        parsed = make_url(backup_url)
+        if (parsed.host != "127.0.0.1" or parsed.port != 55432
+                or parsed.database != "fashionstore_test"
+                or parsed.username != "fashionstore_backup"):
+            raise SystemExit("El respaldo solo permite fashionstore_backup en la base local de pruebas")
+    return app_url, platform_url, backup_url, dump_path
 
 
 def main() -> None:
@@ -43,11 +51,16 @@ def main() -> None:
     parser.add_argument(
         "--host", choices=("127.0.0.1", "0.0.0.0"), default="127.0.0.1",
         help="Use 0.0.0.0 only for a trusted Android emulator/device on the local test network.")
+    parser.add_argument(
+        "--port", type=int, default=8000,
+        help="Puerto para el servidor API de pruebas. Usa un puerto libre si el 8000 está ocupado.")
     args = parser.parse_args()
-    app_url, platform_url = read_test_urls()
+    app_url, platform_url, backup_url, dump_path = read_test_urls()
     settings = Settings(
         database_url=SecretStr(app_url),
         platform_database_url=SecretStr(platform_url),
+        saas_backup_database_url=SecretStr(backup_url) if backup_url else None,
+        saas_backup_pg_dump_path=dump_path,
         cliente_rol_id="E5-CLI",
         environment="test",
         multitenant_enabled=True,
@@ -60,9 +73,9 @@ def main() -> None:
         payments_provider="mock",
         recovery_delivery="disabled",
         geocoding_provider="disabled",
-        allowed_origins=["http://localhost:4200", "http://127.0.0.1:4200"],
+        allowed_origins=["http://localhost:4200", "http://127.0.0.1:4200", "http://localhost:4201", "http://127.0.0.1:4201"],
     )
-    uvicorn.run(create_app(settings), host=args.host, port=8000,
+    uvicorn.run(create_app(settings), host=args.host, port=args.port,
                 log_level="warning", access_log=False)
 
 

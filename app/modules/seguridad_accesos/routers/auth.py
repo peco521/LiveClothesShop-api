@@ -48,7 +48,8 @@ def resolve_identity(db, request, credential):
 
 @router.post("/recuperar-contrasena", status_code=202)
 def request_recovery(data: RecuperarContrasena, request: Request, db: Session = Depends(get_db)):
-    return auth.request_recovery(db, data, get_recovery_delivery(request), peer(request))
+    return auth.request_recovery(db, data, request.app.state.settings,
+                                 get_recovery_delivery(request), peer(request))
 
 
 @router.post("/restablecer-contrasena")

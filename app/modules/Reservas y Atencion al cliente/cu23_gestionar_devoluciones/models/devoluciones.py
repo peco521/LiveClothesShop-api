@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, ForeignKeyConstraint, Integer, Numeric, String, UniqueConstraint, Uuid, func, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, ForeignKeyConstraint, Integer, Numeric, String, UniqueConstraint, Uuid, func, text
 from sqlalchemy.orm import Mapped, deferred, mapped_column
 from app.core.database import Base
 
@@ -73,7 +73,7 @@ class DetalleCambio(Base):
     iddetalleventa: Mapped[int] = mapped_column(Integer)
     idvarnueva: Mapped[str] = mapped_column(String(15))
     precionuevo: Mapped[Decimal] = mapped_column(Numeric(10, 2))
-    retenida: Mapped[bool] = deferred(mapped_column(server_default=text('false')))
+    retenida: Mapped[bool] = deferred(mapped_column(Boolean, server_default=text('false'), default=False))
 
 
 class Reembolso(Base):

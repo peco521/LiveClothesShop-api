@@ -19,7 +19,7 @@ def consume(db, token_id, now):
         RecuperacionContrasena.id == token_id,
         RecuperacionContrasena.utilizada_en.is_(None),
         RecuperacionContrasena.expira_en > now,
-    ).values(utilizada_en=now).execution_options(synchronize_session=False)).rowcount == 1
+    ).values(utilizada_en=now)).rowcount == 1
 
 
 def add(db, recovery):

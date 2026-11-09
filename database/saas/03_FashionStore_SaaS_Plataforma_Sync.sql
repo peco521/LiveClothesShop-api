@@ -387,7 +387,8 @@ INSERT INTO funcion(id,descripcion) VALUES
   ('SAAS-PLANES','Administrar planes y suscripciones'),
   ('SAAS-AUDITORIA','Consultar auditoria de plataforma'),
   ('SAAS-DEMO','Acceso a credenciales de demostracion'),
-  ('SAAS-SOPORTE','Solicitar acceso de soporte auditado')
+  ('SAAS-SOPORTE','Solicitar acceso de soporte auditado'),
+  ('SAAS-RESPALDOS','Solicitar y descargar respaldos de plataforma')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO rol_funcion(nroRol,idFun,descripcion,idEmp)

@@ -59,7 +59,7 @@ def main():
                     JOIN varianteProd v ON v.idEmp=i.idEmp AND v.idVariante=i.idVar AND v.estado='activo'
                     JOIN producto p ON p.idEmp=v.idEmp AND p.idProd=v.idProd AND p.estado='activo'
                     WHERE e.codigo='manaco'
-                    ORDER BY i.cantDisp DESC, v.idVariante LIMIT 1
+                    ORDER BY p.idProd, v.idVariante LIMIT 1
                 """)).mappings().one()
                 print(json.dumps(dict(row), default=str))
                 return
