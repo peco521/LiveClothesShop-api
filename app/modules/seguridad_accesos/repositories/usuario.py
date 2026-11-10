@@ -52,8 +52,14 @@ def registrar_cliente(db, *, user_id, ci, nombre, apellido_pat, apellido_mat,
 
 
 def cambiar_contrasena(db, correo: str, password_hash: str):
-    db.execute(text("CALL sp_cambiar_contrasena(:correo, :password_hash)"), {
-        "correo": correo, "password_hash": password_hash,
+    # La rutina PostgreSQL SaaS exige el tenant explícito; nunca se infiere del
+    # correo, que puede existir en más de una empresa.
+    idemp = db.info.get("idemp")
+    if not isinstance(idemp, int) or idemp <= 0:
+        raise ValueError("La sesión no contiene una empresa válida")
+    db.execute(text("""CALL sp_cambiar_contrasena(
+        CAST(:idemp AS integer), CAST(:correo AS varchar), CAST(:password_hash AS varchar))"""), {
+        "idemp": idemp, "correo": correo, "password_hash": password_hash,
     })
 
 

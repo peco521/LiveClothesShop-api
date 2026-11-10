@@ -137,7 +137,39 @@ def credenciales_demo(request: Request,
 def listar_respaldos(request: Request,
                      identity=Depends(require_platform_permission(RESPALDOS))):
     manager: PlatformBackupManager = request.app.state.saas_backup_manager
-    return {"configuracion": manager.configuration(), "respaldos": manager.list_jobs()}
+    configuracion = manager.configuration()
+    configuracion["programacion"] = manager.valores_programacion()
+    return {"configuracion": configuracion, "respaldos": manager.list_jobs()}
+
+
+@router.patch("/respaldos/configuracion")
+async def configurar_programacion(request: Request, db: Session = Depends(get_platform_db),
+                                  identity=Depends(require_platform_permission(RESPALDOS))):
+    """Activa/desactiva y configura la programación de respaldos (hora, zona
+    horaria, frecuencia diaria/semanal). Auditoría sin secretos."""
+    try:
+        datos = await request.json()
+    except (ValueError, TypeError):
+        raise DomainError(400, "datos_invalidos", "Cuerpo no válido")
+    if not isinstance(datos, dict):
+        raise DomainError(400, "datos_invalidos", "Cuerpo no válido")
+    manager: PlatformBackupManager = request.app.state.saas_backup_manager
+    try:
+        programacion = manager.actualizar_programacion(datos)
+    except DomainError:
+        raise
+    except (ValueError, TypeError) as exc:
+        raise DomainError(400, "datos_invalidos", "Datos de programación no válidos") from exc
+    with db.begin():
+        services.auditar(
+            db, identity.usuario.idUsuario, "respaldo_programacion_actualizada",
+            {clave: programacion.get(clave)
+             for clave in ("enabled", "hora", "zona_horaria", "tipo")},
+            _peer(request),
+        )
+    configuracion = manager.configuration()
+    configuracion["programacion"] = programacion
+    return {"configuracion": configuracion, "respaldos": manager.list_jobs()}
 
 
 @router.post("/respaldos", status_code=202)

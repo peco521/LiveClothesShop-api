@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Date, ForeignKey, Integer, Numeric, SmallInteger, String, Text
+from sqlalchemy import Boolean, CheckConstraint, Date, ForeignKey, Integer, Numeric, SmallInteger, String, Text
 from sqlalchemy.orm import Mapped, declared_attr, deferred, mapped_column
 
 from app.core.database import Base
@@ -93,6 +93,9 @@ class Producto(TenantCatalog, Base):
     idprod: Mapped[str] = mapped_column(String(50), primary_key=True)
     descripcion: Mapped[str] = mapped_column(String(100))
     estado: Mapped[str] = mapped_column(String(20), server_default="activo")
+    # Los fixtures E2E se conservan para sus pruebas, pero no forman parte del
+    # catálogo comercial. La columna se crea mediante migración incremental.
+    esprueba: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     idpromo: Mapped[int | None] = mapped_column(ForeignKey("promocion.idpromo", onupdate="CASCADE", ondelete="CASCADE"))
     idcat: Mapped[int] = mapped_column(ForeignKey("categoria.idcat", onupdate="CASCADE", ondelete="CASCADE"))
     idmarca: Mapped[int] = mapped_column(ForeignKey("marca.idmarca", onupdate="CASCADE", ondelete="CASCADE"))

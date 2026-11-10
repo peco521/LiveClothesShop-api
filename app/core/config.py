@@ -37,6 +37,18 @@ class Settings(BaseSettings):
     saas_backup_max_storage_mb: int = Field(default=10240, ge=256, le=102400)
     saas_backup_min_interval_minutes: int = Field(default=30, ge=0, le=1440)
     saas_backup_timeout_minutes: int = Field(default=120, ge=1, le=1440)
+    # Programacion de respaldos desde el panel SaaS. Se ejecuta en el servidor
+    # (independiente del navegador) con coordinación entre workers y politica
+    # explicita para ejecuciones perdidas durante una caída.
+    saas_backup_programacion_enabled: bool = False
+    saas_backup_programacion_hora: str = "02:00"
+    saas_backup_programacion_zona_horaria: str = "America/La_Paz"
+    saas_backup_programacion_tipo: Literal["diaria", "semanal"] = "diaria"
+    saas_backup_programacion_dias: list[int] = Field(default_factory=lambda: [1])
+    # Cuenta de servicio (plataforma, tipo='S') bajo la cual se auditan los
+    # respaldos programados. Si no se configura no hay auditoria de DB de la
+    # tarea programada (solo registro de la aplicacion).
+    saas_backup_programacion_usuario: str | None = None
     # Modo demostracion: habilita el endpoint de credenciales de prueba y la
     # carga de tenants de demostracion. Prohibido en produccion.
     demo_mode: bool = False
@@ -44,6 +56,9 @@ class Settings(BaseSettings):
     # Lista explicita (CSV) de modulos empresariales ya aislados y verificados.
     # Todo lo que no figure aqui sigue devolviendo 503 modulo_pendiente.
     multitenant_modules: str = ""
+    # Exclusivo de pytest: permite que su propio cliente vea fixtures marcados.
+    # Nunca debe habilitarse en el servidor que usan web o móvil.
+    catalog_include_test_data: bool = False
     # Motor de sincronizacion offline.
     sync_max_operations: int = Field(default=50, ge=1, le=200)
     sync_stale_minutes: int = Field(default=5, ge=1, le=60)
@@ -117,6 +132,21 @@ class Settings(BaseSettings):
             dump_name = Path(self.saas_backup_pg_dump_path).name.lower()
             if dump_name not in {"pg_dump", "pg_dump.exe"}:
                 raise ValueError("SAAS_BACKUP_PG_DUMP_PATH debe señalar a pg_dump")
+        import re as _re
+        if not _re.fullmatch(r"\d{2}:\d{2}", self.saas_backup_programacion_hora or ""):
+            raise ValueError("SAAS_BACKUP_PROGRAMACION_HORA debe tener formato HH:MM")
+        try:
+            from zoneinfo import ZoneInfo
+            ZoneInfo(self.saas_backup_programacion_zona_horaria)
+        except Exception:
+            raise ValueError("SAAS_BACKUP_PROGRAMACION_ZONA_HORARIA no es una zona horaria valida")
+        if self.saas_backup_programacion_tipo not in {"diaria", "semanal"}:
+            raise ValueError("SAAS_BACKUP_PROGRAMACION_TIPO debe ser 'diaria' o 'semanal'")
+        dias = self.saas_backup_programacion_dias or []
+        if any(not isinstance(d, int) or d < 0 or d > 6 for d in dias):
+            raise ValueError("SAAS_BACKUP_PROGRAMACION_DIAS debe contener dias de la semana (0-6)")
+        if self.saas_backup_programacion_tipo == "semanal" and not dias:
+            raise ValueError("SAAS_BACKUP_PROGRAMACION_DIAS es obligatorio para programacion semanal")
         if self.environment == "production" and self.password_storage == "plaintext":
             raise ValueError("PASSWORD_STORAGE=plaintext solo está permitido en desarrollo o pruebas")
         if not self.database_url.get_secret_value().startswith("postgresql+psycopg://"):
@@ -127,6 +157,19 @@ class Settings(BaseSettings):
                 raise ValueError
         except (ArgumentError, ValueError):
             raise ValueError("DATABASE_URL no tiene un formato válido") from None
+        # En producción, la API tenant nunca usa postgres ni la identidad de
+        # plataforma. Las URLs siguen siendo secretos de servidor y no se
+        # serializan a Angular ni Flutter.
+        if self.environment == "production":
+            if url.username != "fashionstore_app":
+                raise ValueError("DATABASE_URL de producción debe usar fashionstore_app")
+            if self.platform_database_url is not None:
+                platform_url = make_url(self.platform_database_url.get_secret_value())
+                if platform_url.username != "fashionstore_provisioner":
+                    raise ValueError(
+                        "PLATFORM_DATABASE_URL de producción debe usar fashionstore_provisioner")
+                if platform_url == url:
+                    raise ValueError("DATABASE_URL y PLATFORM_DATABASE_URL deben ser identidades distintas")
         if self.environment == "production" and not self.cookie_secure:
             raise ValueError("COOKIE_SECURE es obligatorio en producción")
         if self.cookie_samesite == "none" and not self.cookie_secure:

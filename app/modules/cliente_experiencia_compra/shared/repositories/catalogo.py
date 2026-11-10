@@ -33,6 +33,9 @@ def _scoped(db, query):
                       Temporada, Sucursal, Ciudad):
             query = query.options(with_loader_criteria(model, model.idemp == tenant,
                                                        include_aliases=True))
+    if not db.info.get("catalog_include_test_data"):
+        query = query.options(with_loader_criteria(
+            Producto, Producto.esprueba.is_(False), include_aliases=True))
     return query
 
 
@@ -69,6 +72,8 @@ def list_products(db, *, q="", idCat=None, idMarca=None, idCol=None, idTemp=None
                   idTalla=None, idColor=None, minPrecio=None, maxPrecio=None,
                   soloDisponibles=False, offset=0, limit=20, sort="nombre_asc"):
     conditions = [Producto.estado == "activo"]
+    if not db.info.get("catalog_include_test_data"):
+        conditions.append(Producto.esprueba.is_(False))
     if q:
         like = f"%{q}%"
         conditions.append(or_(Producto.descripcion.ilike(like),
@@ -194,25 +199,41 @@ def availability_by_branch(db, variant_ids):
 
 def category_brands(db, category_id):
     """Marcas activas vinculadas a prendas activas de la categoría, sin duplicados."""
+    visible = [Producto.estado == "activo"]
+    if not db.info.get("catalog_include_test_data"):
+        visible.append(Producto.esprueba.is_(False))
     return list(db.scalars(_scoped(db, select(Marca).where(
         Marca.estado == "activo",
         select(Producto.idprod).where(
             Producto.idmarca == Marca.idmarca,
             Producto.idcat == category_id,
-            Producto.estado == "activo").exists(),
+            *visible).exists(),
     ).order_by(Marca.nombre, Marca.idmarca))).all())
 
 
 def facets(db):
     """Listas de referencia para los filtros del catálogo (solo lectura)."""
+    visible = [Producto.estado == "activo"]
+    if not db.info.get("catalog_include_test_data"):
+        visible.append(Producto.esprueba.is_(False))
     return {
-        "categorias": list(db.scalars(_scoped(db, select(Categoria).order_by(Categoria.descripcion, Categoria.idcat))).all()),
+        "categorias": list(db.scalars(_scoped(db, select(Categoria).where(select(Producto.idprod).where(
+            Producto.idcat == Categoria.idcat, *visible).exists()).order_by(Categoria.descripcion, Categoria.idcat))).all()),
         "marcas": list(db.scalars(_scoped(db, select(Marca).where(Marca.estado == "activo")
-                                  .order_by(Marca.nombre, Marca.idmarca))).all()),
-        "colecciones": list(db.scalars(_scoped(db, select(Coleccion).order_by(Coleccion.descripcion, Coleccion.idcol))).all()),
-        "temporadas": list(db.scalars(_scoped(db, select(Temporada).order_by(Temporada.nombre, Temporada.idtemp))).all()),
-        "tallas": list(db.scalars(_scoped(db, select(Talla).order_by(Talla.idtalla))).all()),
-        "colores": list(db.scalars(_scoped(db, select(Color).order_by(Color.descripcion, Color.idcolor))).all()),
+                                   .where(select(Producto.idprod).where(Producto.idmarca == Marca.idmarca, *visible).exists())
+                                   .order_by(Marca.nombre, Marca.idmarca))).all()),
+        "colecciones": list(db.scalars(_scoped(db, select(Coleccion).where(select(Producto.idprod).where(
+            Producto.idcol == Coleccion.idcol, *visible).exists()).order_by(Coleccion.descripcion, Coleccion.idcol))).all()),
+        "temporadas": list(db.scalars(_scoped(db, select(Temporada).where(select(TempColeccion.idcol).join(
+            Producto, Producto.idcol == TempColeccion.idcol).where(TempColeccion.idtemp == Temporada.idtemp, *visible).exists()
+            ).order_by(Temporada.nombre, Temporada.idtemp))).all()),
+        "tallas": list(db.scalars(_scoped(db, select(Talla).where(select(VarianteProd.idvariante).join(
+            Producto, Producto.idprod == VarianteProd.idprod).where(VarianteProd.idtalla == Talla.idtalla,
+            VarianteProd.estado == "activo", *visible).exists()).order_by(Talla.idtalla))).all()),
+        "colores": list(db.scalars(_scoped(db, select(Color).where(select(VarianteColor.idvar).join(
+            VarianteProd, VarianteProd.idvariante == VarianteColor.idvar).join(
+            Producto, Producto.idprod == VarianteProd.idprod).where(VarianteColor.idcolor == Color.idcolor,
+            VarianteProd.estado == "activo", *visible).exists()).order_by(Color.descripcion, Color.idcolor))).all()),
     }
 
 

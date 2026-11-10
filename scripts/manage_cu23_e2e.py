@@ -69,9 +69,9 @@ def _prepare(connection):
         VALUES (:user, :code, :tenant)
     """), {"user": user, "code": uuid4().hex[:10], "tenant": tenant})
     connection.execute(text("""
-        INSERT INTO producto(idProd, descripcion, estado, idPromo, idCat, idMarca,
+        INSERT INTO producto(idProd, descripcion, estado, esPrueba, idPromo, idCat, idMarca,
                              idCol, idProv, idEmp)
-        VALUES (:product, :name, 'activo', NULL, :category, :brand,
+        VALUES (:product, :name, 'activo', true, NULL, :category, :brand,
                 :collection, :provider, :tenant)
     """), {
         "product": product, "name": f"Prenda {marker}", "category": template["idcat"],

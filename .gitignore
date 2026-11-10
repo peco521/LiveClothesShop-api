@@ -8,6 +8,7 @@ __pycache__/
 .env.*
 !.env.example
 .local/
+.tmp/
 
 # Virtual environments
 venv/
@@ -26,6 +27,9 @@ Thumbs.db
 
 # Documentación y scripts locales de base de datos
 docs/
+!docs/
+docs/*
+!docs/SUPABASE_INTEGRATION_REVIEW.md
 database/
 !database/
 database/*
@@ -39,6 +43,21 @@ database/saas/*
 !database/saas/05_verificacion_rls.sql
 !database/saas/06_sync_venta_auditoria.sql
 !database/saas/README.md
+!database/saas/supabase/
+database/saas/supabase/*
+!database/saas/supabase/00_catalogo_preflight_readonly.sql
+!database/saas/supabase/01_postgrest_revocations_dryrun.sql
+!database/saas/supabase/02_tenant_rls_incremental.sql
+!database/saas/supabase/03_shared_saas_preflight_readonly.sql
+!database/saas/supabase/04_roles_preflight_readonly.sql
+!database/saas/supabase/04_roles_bootstrap_template.sql
+!database/saas/supabase/05_tenant_auth_incremental.sql
+!database/saas/supabase/06_empresa_identity_incremental.sql
+!database/saas/supabase/07_access_grants_incremental.sql
+!database/saas/supabase/08_password_recovery_resolver_incremental.sql
+!database/saas/supabase/09_sync_offline_incremental.sql
+!database/saas/supabase/10_catalogo_datos_prueba_incremental.sql
+!database/saas/supabase/README.md
 tests/
 !tests/
 tests/*

@@ -11,6 +11,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable
 
 from sqlalchemy.engine import make_url
 
@@ -23,12 +24,22 @@ _PENDING_MESSAGE = (
     "de solo lectura válida para la base local de pruebas."
 )
 
+_PROGRAMACION_FILE = "programacion.json"
+_PROGRAMACION_LOCK = "programacion.lock"
+_CAMPOS_PROGRAMACION = {
+    "enabled", "hora", "zona_horaria", "tipo", "dias_semana",
+    "proxima_ejecucion", "ultima_ejecucion", "ultimo_resultado",
+    "ultimo_error", "recuperacion_pendiente",
+}
+
 
 class PlatformBackupManager:
-    def __init__(self, settings):
+    def __init__(self, settings, platform_database_url=None, auditar: Callable[[str, dict], None] | None = None):
         self._settings = settings
         self._database_url = settings.saas_backup_database_url
         self._dump_path = self._find_pg_dump(settings.saas_backup_pg_dump_path)
+        self._platform_database_url = platform_database_url
+        self._auditar = auditar
         storage_root = os.getenv("LOCALAPPDATA") if os.name == "nt" else os.getenv("XDG_STATE_HOME")
         if not storage_root:
             storage_root = str(
@@ -324,6 +335,189 @@ class PlatformBackupManager:
             if job.get("estado") == "completado" and self._dump_file(job["id"]).is_file()
         )
 
+    # ------------------------------------------------------------------
+    # Programación de respaldos (ejecución en el servidor, independiente del
+    # navegador; configuración persistida en el backend, fuera de Git)
+    # ------------------------------------------------------------------
+
+    def _ruta_programacion(self) -> Path:
+        self._directory.mkdir(parents=True, exist_ok=True)
+        return self._directory / _PROGRAMACION_FILE
+
+    def _escribir_json_atomico(self, path: Path, valor: dict) -> None:
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self._directory,
+                prefix=path.stem + "-", suffix=".tmp", delete=False,
+            ) as file:
+                temporary = Path(file.name)
+                json.dump(valor, file, ensure_ascii=False)
+            os.replace(temporary, path)
+        except OSError:
+            if temporary is not None:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
+            raise DomainError(503, "historial_no_disponible",
+                              "No se pudo persistir la programación de respaldos") from None
+
+    def valores_programacion(self) -> dict:
+        """Valores de programación: ajustes del servicio más estado persistido."""
+        valores = {
+            "enabled": bool(self._settings.saas_backup_programacion_enabled),
+            "hora": self._settings.saas_backup_programacion_hora,
+            "zona_horaria": self._settings.saas_backup_programacion_zona_horaria,
+            "tipo": self._settings.saas_backup_programacion_tipo,
+            "dias_semana": list(self._settings.saas_backup_programacion_dias or []),
+        }
+        try:
+            persistido = json.loads(self._ruta_programacion().read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, ValueError):
+            persistido = {}
+        if isinstance(persistido, dict):
+            for clave in _CAMPOS_PROGRAMACION:
+                if clave in persistido:
+                    valores[clave] = persistido[clave]
+        return valores
+
+    @staticmethod
+    def _proxima_ejecucion(ahora_utc: datetime, valores: dict) -> datetime:
+        """Calcula la siguiente ejecución en la zona horaria configurada.
+
+        Política de ejecuciones perdidas: si la próxima ejecución ya pasó
+        (servidor caído), se ejecuta una sola vez al reanudar y luego se
+        retoma la cadencia normal.
+        """
+        from zoneinfo import ZoneInfo
+
+        zona = ZoneInfo(valores["zona_horaria"])
+        ahora = ahora_utc.astimezone(zona)
+        hora, minuto = (int(x) for x in str(valores["hora"]).split(":"))
+        tipo = valores["tipo"]
+        dias = set(valores.get("dias_semana") or [])
+        candidato = ahora.replace(hour=hora, minute=minuto, second=0, microsecond=0)
+        if tipo == "semanal" and dias:
+            while candidato <= ahora or candidato.weekday() not in dias:
+                candidato += timedelta(days=1)
+        else:
+            if candidato <= ahora:
+                candidato += timedelta(days=1)
+        return candidato.astimezone(timezone.utc)
+
+    def ejecutar_si_devido(self) -> dict | None:
+        """Ejecuta un respaldo programado si corresponde.
+
+        Coordinación entre workers: el volcado real se serializa con
+        prepare_job (mismo mecanismo seguro de respaldo), así dos workers
+        nunca generan respaldos duplicados simultáneos.
+        """
+        valores = self.valores_programacion()
+        if not valores.get("enabled"):
+            return None
+        ahora = datetime.now(timezone.utc)
+        proxima_raw = valores.get("proxima_ejecucion")
+        proxima = None
+        if isinstance(proxima_raw, str):
+            try:
+                proxima = datetime.fromisoformat(proxima_raw)
+            except ValueError:
+                proxima = None
+        if proxima is not None and proxima.tzinfo is None:
+            proxima = proxima.replace(tzinfo=timezone.utc)
+        if proxima is None or ahora >= proxima:
+            return self._ejecutar_programada(valores, ahora)
+        return None
+
+    def _ejecutar_programada(self, valores: dict, ahora: datetime) -> dict:
+        """Dispara, espera y registra un respaldo programado.
+
+        La exclusión mutua entre workers la brinda prepare_job (mismo lock de
+        archivo que usan las copias de seguridad a demanda), así no se adquiere
+        el lock dos veces en el mismo hilo.
+        """
+        try:
+            job = self.prepare_job()
+            self.start_job(job["id"])
+        except DomainError as exc:
+            if exc.code == "respaldo_en_proceso":
+                _LOG.info("Respaldo programado omitido: ya hay un respaldo en proceso")
+                self._reprogramar(valores, ahora)
+                return {"estado": "omitido", "motivo": "respaldo_en_proceso"}
+            raise
+        resultado = self._esperar_job(job["id"])
+        exito = resultado["estado"] == "completado"
+        valores["ultima_ejecucion"] = datetime.now(timezone.utc).isoformat()
+        valores["ultimo_resultado"] = "exitoso" if exito else "fallido"
+        valores["ultimo_error"] = None if exito else resultado.get("error")
+        valores["proxima_ejecucion"] = self._proxima_ejecucion(
+            datetime.now(timezone.utc), valores).isoformat()
+        valores.pop("recuperacion_pendiente", None)
+        self._guardar_programacion_persistido(valores)
+        if self._auditar and self._settings.saas_backup_programacion_usuario:
+            try:
+                self._auditar(
+                    "respaldo_plataforma_programado",
+                    {"idRespaldo": job["id"], "destino": "fashionstore_test"},
+                )
+            except Exception:
+                _LOG.warning("No se pudo auditar el respaldo programado")
+        return {
+            "estado": resultado["estado"],
+            "idRespaldo": job["id"],
+            "tamanoBytes": resultado.get("tamanoBytes"),
+            "error": resultado.get("error"),
+        }
+
+    def _reprogramar(self, valores: dict, ahora: datetime) -> None:
+        valores["proxima_ejecucion"] = self._proxima_ejecucion(ahora, valores).isoformat()
+        self._guardar_programacion_persistido(valores)
+
+    def _guardar_programacion_persistido(self, valores: dict) -> None:
+        persistido = {clave: valores.get(clave) for clave in _CAMPOS_PROGRAMACION}
+        self._escribir_json_atomico(self._ruta_programacion(), persistido)
+
+    def _esperar_job(self, backup_id: str) -> dict:
+        timeout = time.monotonic() + self._settings.saas_backup_timeout_minutes * 60
+        while True:
+            job = self.get_job(backup_id)
+            if job.get("estado") in {"completado", "fallido"}:
+                return job
+            if time.monotonic() > timeout:
+                return {"estado": "fallido", "error": "backup_timeout",
+                        "tamanoBytes": None}
+            time.sleep(1)
+
+    def actualizar_programacion(self, cambios: dict) -> dict:
+        """Valida y persiste un cambio de programación desde el panel SaaS.
+
+        Solo se aceptan claves de ajuste: enabled, hora, zona_horaria,
+        tipo, dias_semana. Recalcula la próxima ejecución y la persiste.
+        """
+        claves_permitidas = {"enabled", "hora", "zona_horaria", "tipo", "dias_semana"}
+        invalidas = set(cambios) - claves_permitidas
+        if invalidas:
+            raise DomainError(422, "claves_invalidas",
+                              "Claves no permitidas en programación de respaldos")
+        valores = self.valores_programacion()
+        valores.update({k: v for k, v in cambios.items() if k in claves_permitidas})
+        if valores.get("tipo") == "semanal" and not valores.get("dias_semana"):
+            raise DomainError(422, "dias_requeridos",
+                              "La programación semanal requiere al menos un día de la semana")
+        import re as _re
+        if not _re.fullmatch(r"\d{2}:\d{2}", str(valores.get("hora") or "")):
+            raise DomainError(422, "hora_invalida", "La hora debe tener formato HH:MM")
+        try:
+            from zoneinfo import ZoneInfo
+            ZoneInfo(str(valores.get("zona_horaria")))
+        except Exception:
+            raise DomainError(422, "zona_invalida", "Zona horaria no válida")
+        valores["proxima_ejecucion"] = self._proxima_ejecucion(
+            datetime.now(timezone.utc), valores).isoformat()
+        self._guardar_programacion_persistido(valores)
+        return self.valores_programacion()
+
     def prepare_job(self) -> dict:
         if not self.configuration()["configurado"]:
             raise DomainError(503, "respaldo_no_configurado", _PENDING_MESSAGE)
@@ -485,7 +679,7 @@ class PlatformBackupManager:
                 )
             except DomainError:
                 _LOG.warning("No se pudo persistir el estado fallido del respaldo %s", backup_id)
-            _LOG.warning("Falló la tarea local de respaldo %s", backup_id)
+            _LOG.exception("Falló la tarea local de respaldo %s", backup_id)
         finally:
             with self._guard:
                 self._process = None

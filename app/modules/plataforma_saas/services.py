@@ -202,7 +202,8 @@ def _sanear_detalles_auditoria(value):
     """Publica solo atributos técnicos aprobados; omite texto libre y secretos."""
     if not isinstance(value, dict):
         return None
-    allowed = {"idEmp", "codigo", "idPlan", "estado", "idRespaldo", "destino"}
+    allowed = {"idEmp", "codigo", "idPlan", "estado", "idRespaldo", "destino",
+               "enabled", "hora", "zona_horaria", "tipo"}
     return {
         key: item
         for key, item in value.items()

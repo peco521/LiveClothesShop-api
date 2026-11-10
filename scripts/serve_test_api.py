@@ -64,6 +64,8 @@ def main() -> None:
         cliente_rol_id="E5-CLI",
         environment="test",
         multitenant_enabled=True,
+        # El servidor que usa el móvil nunca expone fixtures E2E.
+        catalog_include_test_data=False,
         # Explicit local verification selection. Cash sales use atomic /api/sync;
         # digital checkout uses CU13/CU14 with non-production mock only.
         multitenant_modules="cu05,cu06,cu07,cu08,cu09,cu10,cu11,cu12,cu13,cu14,cu15,cu18,cu19,cu20,cu21,cu22,cu23,cu25,sync,saas,cu24",

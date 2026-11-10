@@ -46,8 +46,8 @@ def main():
                                  {"user": user, "cod": uuid4().hex[:10], "tenant": tenant})
                     product = marker + "-" + str(tenant)
                     variant = "R" + uuid4().hex[:14]
-                    conn.execute(text("""INSERT INTO producto(idprod,descripcion,estado,idpromo,idcat,idmarca,idcol,idprov,idemp)
-                        VALUES (:product,:name,'activo',NULL,:cat,:brand,:col,:provider,:tenant)"""),
+                    conn.execute(text("""INSERT INTO producto(idprod,descripcion,estado,esprueba,idpromo,idcat,idmarca,idcol,idprov,idemp)
+                        VALUES (:product,:name,'activo',true,NULL,:cat,:brand,:col,:provider,:tenant)"""),
                         {"product": product, "name": f"Prenda reservas carrito E2E {code}", "cat": template["idcat"],
                          "brand": template["idmarca"], "col": template["idcol"], "provider": template["idprov"], "tenant": tenant})
                     conn.execute(text("""INSERT INTO varianteprod(idvariante,sku,precio,estado,idtalla,idprod,idemp)

@@ -26,6 +26,8 @@ def get_db(request: Request):
     with request.app.state.session_factory() as db:
         try:
             db.info["multitenant"] = request.app.state.settings.multitenant_enabled
+            db.info["catalog_include_test_data"] = (
+                request.app.state.settings.catalog_include_test_data)
             yield db
         finally:
             db.rollback()

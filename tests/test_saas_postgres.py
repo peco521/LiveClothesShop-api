@@ -133,6 +133,7 @@ def _configuracion(multitenant_modules: str = "cu09,sync,saas") -> Settings:
         payments_provider="mock",
         recovery_delivery="disabled",
         geocoding_provider="disabled",
+        catalog_include_test_data=True,
     )
 
 
@@ -299,9 +300,9 @@ def inventario_dependencias(plataforma, credenciales):
             pytest.fail(f"Fixture SaaS mal preparado: {codigo} no tiene referencias de catálogo")
         inventario_id = conexion.scalar(text("SELECT coalesce(max(nroInv), 0) + 1 FROM inventario"))
         conexion.execute(text("""
-            INSERT INTO producto(idProd, descripcion, estado, idPromo, idCat,
-                                 idMarca, idCol, idProv, idEmp)
-            VALUES (:producto, 'Fixture aislada test_dependencias', 'activo', NULL,
+            INSERT INTO producto(idProd, descripcion, estado, esPrueba, idPromo, idCat,
+                                  idMarca, idCol, idProv, idEmp)
+            VALUES (:producto, 'Fixture aislada test_dependencias', 'activo', true, NULL,
                     :categoria, :marca, :coleccion, :proveedor, :idemp)
         """), {"producto": id_producto, "categoria": template["idCat"],
               "marca": template["idMarca"], "coleccion": template["idCol"],
@@ -543,8 +544,8 @@ def catalogos_cu10(plataforma):
                     pid = f"{marker}-{tenant}-{index}"
                     vid = "T" + uuid4().hex[:14]
                     products.append(pid); variants.append(vid)
-                    conn.execute(text("""INSERT INTO producto(idemp,idprod,descripcion,estado,idcat,idmarca,idcol,idprov,idpromo)
-                        VALUES (:tenant,:pid,:name,:state,:cat,:brand,:col,:provider,:promo)"""),
+                    conn.execute(text("""INSERT INTO producto(idemp,idprod,descripcion,estado,esprueba,idcat,idmarca,idcol,idprov,idpromo)
+                        VALUES (:tenant,:pid,:name,:state,true,:cat,:brand,:col,:provider,:promo)"""),
                         {"tenant": tenant, "pid": pid, "name": f"{marker} prenda {index}", "state": state,
                          "cat": cat, "brand": brand, "col": col, "provider": provider, "promo": promo})
                     owned.setdefault(("producto", "idprod"), []).append(pid)

@@ -6,6 +6,7 @@ import logging
 
 from fastapi import FastAPI, Request, Response
 from pydantic import ValidationError
+from sqlalchemy import text
 
 from app.core.config import Settings
 from app.core.access_tokens import AccessTokens
@@ -64,6 +65,7 @@ MODULE_PREFIXES = {
     "cu13": ("/api/cliente/compras",),
     "cu14": ("/api/cliente/pagos",),
     "cu15": ("/api/cliente/historial-compras",),
+    "cu17": ("/api/cliente/recomendaciones",),
     "cu20": ("/api/admin/inventario",),
     "cu19": ("/api/admin/proveedores",),
     "cu18": ("/api/admin/catalogo",),
@@ -97,8 +99,6 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
             # Do not print environment values from Pydantic's input diagnostics.
             raise RuntimeError("Configuración inválida: revise las variables de entorno requeridas") from None
         application.state.settings = config
-        backup_manager = PlatformBackupManager(config)
-        application.state.saas_backup_manager = backup_manager
         application.state.passwords = Passwords(config.password_storage)
         application.state.access_tokens = AccessTokens()
         # Pasarela de pago mock por defecto; inyectable en tests. Sin pasarelas reales.
@@ -130,16 +130,67 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
             platform_engine, platform_factory = create_platform_database(
                 config.platform_database_url.get_secret_value())
         application.state.platform_session_factory = platform_factory
+
+        def auditar_programado(accion: str, detalles: dict) -> None:
+            """Audita respaldos programados con la cuenta de servicio configurada.
+
+            Nunca incluye secretos: solo el identificador del respaldo y el destino.
+            """
+            if not config.saas_backup_programacion_usuario or platform_factory is None:
+                return
+            from app.modules.plataforma_saas import services
+            with platform_factory() as db:
+                services.auditar(
+                    db, config.saas_backup_programacion_usuario, accion, detalles, None)
+
+        backup_manager = PlatformBackupManager(
+            config,
+            platform_database_url=(
+                config.platform_database_url.get_secret_value()
+                if config.platform_database_url is not None else None),
+            auditar=auditar_programado,
+        )
+        application.state.saas_backup_manager = backup_manager
+
+        async def programa_respaldos():
+            """Bucle de programación de respaldos (ejecución en el servidor).
+
+            Un solo worker ejerce de líder mediante el lock de programación;
+            los demás workers esperan. Las ejecuciones se disparan al llegar la
+            hora programada y se recuperan una sola vez tras una caída.
+            """
+            while True:
+                try:
+                    backup_manager.ejecutar_si_devido()
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        'No se pudo ejecutar el respaldo programado; se reintentará')
+                await asyncio.sleep(20)
+
+        programa_task = asyncio.create_task(programa_respaldos())
         async def expire_reservations():
             expire = import_module('app.modules.Reservas y Atencion al cliente.cu22_gestionar_reservas_sucursal.services.reservas').expire
             def run():
-                with factory() as db:
+                # El vencimiento atraviesa todos los tenants y llama una PA
+                # global; nunca puede ejecutarse con la identidad HTTP/RLS.
+                if platform_factory is None:
+                    raise RuntimeError('El vencimiento global requiere PLATFORM_DATABASE_URL')
+                with platform_factory() as db:
+                    # Varios procesos ASGI pueden compartir la misma base de
+                    # pruebas. El lock es transaccional: solo un worker ejecuta
+                    # el vencimiento y se libera incluso si la PA falla.
+                    leader = db.scalar(text(
+                        "SELECT pg_try_advisory_xact_lock(hashtext('fashionstore:reservation-expiry:v1'))"))
+                    if not leader:
+                        db.rollback()
+                        return
                     expire(db)
             while True:
                 try:
                     await asyncio.to_thread(run)
                 except Exception:
-                    logging.getLogger(__name__).warning('No se pudo ejecutar el vencimiento de reservas; se reintentará')
+                    logging.getLogger(__name__).exception(
+                        'No se pudo ejecutar el vencimiento de reservas; se reintentará')
                 await asyncio.sleep(60)
         # Global expiry must run under a separately authorized service identity.
         # Se ejecuta en test y development para vencimiento autónomo de reservas
@@ -154,6 +205,12 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
                 expiry_task.cancel()
                 try:
                     await expiry_task
+                except asyncio.CancelledError:
+                    pass
+            if programa_task:
+                programa_task.cancel()
+                try:
+                    await programa_task
                 except asyncio.CancelledError:
                     pass
             if owned_delivery is not None:
