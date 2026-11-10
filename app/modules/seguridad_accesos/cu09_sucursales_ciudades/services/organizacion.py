@@ -1,7 +1,8 @@
 from contextlib import contextmanager
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy import delete, func, select, text
+from app.core.database import sqlstate
 from app.modules.cliente_experiencia_compra.shared.models.comercio import HorarioAtencion, HorarioSuc
 from app.modules.cliente_experiencia_compra.shared.horarios import guardar_dias, leer_dias
 
@@ -25,6 +26,12 @@ def transaction(db):
     except IntegrityError:
         db.rollback()
         raise DomainError(409, "conflicto_integridad", "Los datos entran en conflicto con un registro existente") from None
+    except DBAPIError as exc:
+        db.rollback()
+        if sqlstate(exc) == "P0001":
+            raise DomainError(409, "limite_sucursales_alcanzado",
+                              "Se alcanzó el límite de sucursales activas permitido por el plan vigente") from None
+        raise
     except Exception:
         db.rollback()
         raise
@@ -179,7 +186,8 @@ def edit_branch(db, branch_id, data, actor_id, peer, geocoder=None):
     with transaction(db):
         row = branch(db, branch_id, lock=True)
         changes = data.model_dump(exclude_unset=True)
-        hours = changes.pop("horarios", None)
+        changes.pop("horarios", None)
+        hours = [h.model_dump() for h in data.horarios] if "horarios" in data.model_fields_set and data.horarios is not None else None
         city_row = city(db, changes.get("idCiud", row.idciud), lock=True, reference=True)
         revalidate_actor(db, actor_id)
         columns = {"nombre": "nombre", "direccion": "direccion", "estado": "estado", "idCiud": "idciud"}

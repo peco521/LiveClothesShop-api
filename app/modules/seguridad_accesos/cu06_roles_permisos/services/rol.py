@@ -33,14 +33,23 @@ def get(db, role_id, *, lock=False):
     return role
 
 
-def detail(role, settings):
+def _is_client_role(db, role_nro: str, settings) -> bool:
+    if role_nro == settings.cliente_rol_id:
+        return True
+    if db.info.get("multitenant") is True and role_nro == f"E{db.info.get('idemp')}-CLI":
+        return True
+    return False
+
+
+def detail(role, settings, db=None):
+    is_cli = _is_client_role(db, role.nro, settings) if db is not None else (role.nro == settings.cliente_rol_id)
     return RolDetalle(nro=role.nro, descripcion=role.descripcion,
-                      esRolCliente=role.nro == settings.cliente_rol_id, estado=role.estado)
+                      esRolCliente=is_cli, estado=role.estado)
 
 
 def list_roles(db, settings, offset, limit):
     rows, total = repository.list_roles(db, offset, limit)
-    return RolesListado(items=[detail(role, settings) for role in rows], total=total, offset=offset, limit=limit)
+    return RolesListado(items=[detail(role, settings, db) for role in rows], total=total, offset=offset, limit=limit)
 
 
 def functions(db):
@@ -49,7 +58,7 @@ def functions(db):
 
 def permissions(db, role_id, settings):
     role = get(db, role_id)
-    return PermisosDetalle(nroRol=role.nro, esRolCliente=role.nro == settings.cliente_rol_id,
+    return PermisosDetalle(nroRol=role.nro, esRolCliente=_is_client_role(db, role.nro, settings),
                            permisos=[row.idfun for row in repository.assignments(db, role_id)])
 
 
@@ -58,10 +67,11 @@ def create(db, data, settings, actor_id, peer):
         continuidad.begin_change(db, actor_id, "CU06", settings.cliente_rol_id)
         if repository.get(db, data.nro) is not None:
             raise DomainError(409, "rol_duplicado", "El identificador del rol ya existe")
-        role = Rol(nro=data.nro, descripcion=data.descripcion, estado="activo")
+        tenant = {"idemp": db.info["idemp"]} if db.info.get("multitenant") else {}
+        role = Rol(nro=data.nro, descripcion=data.descripcion, estado="activo", **tenant)
         repository.add(db, role)
         record_role(db, "rol_creado", actor_id, peer, role.nro)
-        result = detail(role, settings)
+        result = detail(role, settings, db)
     return result
 
 
@@ -72,7 +82,7 @@ def edit(db, role_id, data, settings, actor_id, peer):
         if role.descripcion != data.descripcion:
             role.descripcion = data.descripcion
             record_role(db, "rol_actualizado", actor_id, peer, role.nro)
-        result = detail(role, settings)
+        result = detail(role, settings, db)
     return result
 
 
@@ -83,7 +93,7 @@ def set_state(db, role_id, data, settings, actor_id, peer):
         role = get(db, role_id, lock=True)
         estado = "activo" if data.activo else "inactivo"
         if not data.activo:
-            if role.nro == settings.cliente_rol_id:
+            if _is_client_role(db, role.nro, settings):
                 raise DomainError(409, "rol_cliente_protegido",
                                   "El rol público de clientes no puede desactivarse")
             if repository.assigned_users(db, role_id) > 0:
@@ -96,7 +106,7 @@ def set_state(db, role_id, data, settings, actor_id, peer):
             continuidad.ensure_remaining(db, before, settings.cliente_rol_id)
             record_role(db, "rol_activado" if data.activo else "rol_desactivado",
                         actor_id, peer, role.nro)
-        result = detail(role, settings)
+        result = detail(role, settings, db)
     return result
 
 
@@ -107,7 +117,7 @@ def replace_permissions(db, role_id, data, settings, actor_id, peer):
         if role.estado != "activo":
             raise DomainError(409, "rol_inactivo", "El rol está inactivo; reactívalo antes de cambiar sus permisos")
         desired = set(data.permisos)
-        if role.nro == settings.cliente_rol_id and desired:
+        if _is_client_role(db, role.nro, settings) and desired:
             raise DomainError(422, "rol_cliente_sin_funciones", "El rol cliente no puede recibir funciones")
         if repository.existing_functions(db, desired) != desired:
             raise DomainError(422, "funcion_no_encontrada", "Una o más funciones no existen")
@@ -118,6 +128,6 @@ def replace_permissions(db, role_id, data, settings, actor_id, peer):
             continuidad.ensure_remaining(db, before, settings.cliente_rol_id)
             record_role(db, "permisos_rol_actualizados", actor_id, peer, role.nro,
                         agregadas=sorted(desired - old), retiradas=sorted(old - desired))
-        result = PermisosDetalle(nroRol=role.nro, esRolCliente=role.nro == settings.cliente_rol_id,
+        result = PermisosDetalle(nroRol=role.nro, esRolCliente=_is_client_role(db, role.nro, settings),
                                 permisos=sorted(desired))
     return result

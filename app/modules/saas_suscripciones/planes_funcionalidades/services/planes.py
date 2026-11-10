@@ -1,16 +1,13 @@
 import hashlib
 import json
-from datetime import datetime
 from ipaddress import ip_address
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import Integer, String, column, delete, func, select, table, text
 
 from app.core.errors import DomainError
 from app.modules.inventario_productos.shared.access import transaction
 from app.modules.saas_suscripciones.planes_funcionalidades.models.planes import (
-    FuncionalidadSaas, Plan, PlanFuncionalidad, PlanVersion, PlanVersionFuncionalidad,
-    SuscripcionPlan, SuscripcionVersion,
+    FuncionalidadSaas, Plan, PlanFuncionalidad, SuscripcionPlan,
 )
 from app.modules.seguridad_accesos.repositories import bitacora
 
@@ -55,16 +52,12 @@ def list_features(db):
 
 def subscriptions(db, plan_id, lock=False):
     _plan(db, plan_id)
-    today = datetime.now(ZoneInfo('America/La_Paz')).date()
     branch_count = select(func.count()).select_from(sucursal).where(
         sucursal.c.idemp == SuscripcionPlan.idemp, sucursal.c.estado == 'activo',
     ).correlate(SuscripcionPlan).scalar_subquery()
-    active = select(SuscripcionPlan, SuscripcionVersion, PlanVersion, empresa.c.nombre, branch_count).select_from(
-        SuscripcionPlan).outerjoin(SuscripcionVersion, SuscripcionVersion.idsusc == SuscripcionPlan.idsusc).outerjoin(
-        PlanVersion, PlanVersion.idversion == SuscripcionVersion.idversion).outerjoin(
-        empresa, empresa.c.idemp == SuscripcionPlan.idemp).where(
+    active = select(SuscripcionPlan, empresa.c.nombre, branch_count).select_from(
+        SuscripcionPlan).outerjoin(empresa, empresa.c.idemp == SuscripcionPlan.idemp).where(
         SuscripcionPlan.idplan == plan_id, SuscripcionPlan.estado == 'activa',
-        SuscripcionPlan.fechainicio <= today, SuscripcionPlan.fechavencimiento >= today,
     ).order_by(SuscripcionPlan.idsusc)
     if lock:
         active = active.with_for_update(of=SuscripcionPlan)
@@ -73,16 +66,15 @@ def subscriptions(db, plan_id, lock=False):
         for idemp in sorted({sub.idemp for sub, *_ in rows}):
             db.execute(text('SELECT pg_advisory_xact_lock(1001, :idemp)'), {'idemp': idemp})
     result = []
-    for sub, mapping, version, company, branches in rows:
-        if mapping is None or version is None or mapping.idplan != plan_id or version.idplan != plan_id:
-            raise DomainError(409, 'version_suscripcion_no_disponible', 'Falta la versión de una suscripción; revise la configuración de la plataforma')
+    plan = _plan(db, plan_id)
+    for sub, company, branches in rows:
         if company is None:
             raise DomainError(409, 'empresa_no_disponible', 'Una suscripción no tiene empresa válida')
         if lock and db.get_bind().dialect.name == 'postgresql':
             branches = db.scalar(select(func.count()).select_from(sucursal).where(
                 sucursal.c.idemp == sub.idemp, sucursal.c.estado == 'activo'))
         result.append({'idSuscripcion': sub.idsusc, 'idEmpresa': sub.idemp, 'empresa': company,
-                       'version': version.numero, 'maxSucursales': version.maxsucursales,
+                       'maxSucursales': plan.maxsucursales,
                        'sucursalesActivas': branches})
     return result
 
@@ -94,19 +86,20 @@ def preview(db, plan_id, data, lock=False):
     _validate_codes(db, data.funcionalidades)
     current = _view(db, plan)
     affected = subscriptions(db, plan_id, lock=lock)
-    selected = set(data.suscripcionesSeleccionadas)
-    if not selected.issubset({row['idSuscripcion'] for row in affected}):
-        raise DomainError(409, 'suscripcion_invalida', 'Una suscripción seleccionada ya no está vigente en este plan')
-    selected_companies = {row['idEmpresa'] for row in affected if row['idSuscripcion'] in selected}
-    if any(row['idEmpresa'] in selected_companies and row['idSuscripcion'] not in selected for row in affected):
-        raise DomainError(409, 'seleccion_empresa_incompleta', 'Debe aplicar la misma selección a las suscripciones vigentes de cada empresa')
-    if any(row['sucursalesActivas'] > data.maxSucursales for row in affected if row['idSuscripcion'] in selected):
-        raise DomainError(409, 'limite_incompatible', 'Una empresa seleccionada tiene más sucursales activas que el nuevo límite')
+    if any(row['sucursalesActivas'] > data.maxSucursales for row in affected):
+        raise DomainError(409, 'limite_incompatible', 'Una empresa tiene más sucursales activas que el nuevo límite')
+    references_query = select(SuscripcionPlan).where(SuscripcionPlan.idplan == plan_id).order_by(SuscripcionPlan.idsusc)
+    if lock:
+        references_query = references_query.with_for_update()
+    references = [{'id': item.idsusc, 'empresa': item.idemp, 'estado': item.estado,
+                   'inicio': item.fechainicio.isoformat(), 'fin': item.fechavencimiento.isoformat()}
+                  for item in db.scalars(references_query)]
     changes = data.model_dump(exclude={'confirmacionImpacto'})
-    snapshot = {'actual': current, 'propuesto': changes, 'suscripciones': affected}
+    snapshot = {'actual': current, 'propuesto': changes, 'suscripciones': affected, 'referencias': references}
     token = hashlib.sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
-    return {'actual': current, 'suscripciones': affected, 'seleccionadas': len(selected),
-            'conservanVersion': len(affected) - len(selected), 'confirmacionImpacto': token}
+    return {'actual': current, 'suscripciones': affected, 'suscripcionesActivas': len(affected),
+            'empresasActivas': len({item['idEmpresa'] for item in affected}),
+            'suscripcionesAsociadas': len(references), 'confirmacionImpacto': token}
 
 
 def _audit(db, action, user_id, peer, details):
@@ -117,6 +110,42 @@ def _audit(db, action, user_id, peer, details):
     bitacora.add(db, action=action, user_id=user_id, ip=ip, details=details)
 
 
+def _sync_plan_version(db, plan_id: int, nombre: str, max_sucursales: int, estado: str, funcionalidades: list[str]) -> None:
+    if db.get_bind().dialect.name != 'postgresql':
+        return
+    if not db.scalar(text("SELECT to_regclass('public.plan_version') IS NOT NULL")):
+        return
+    version_id = db.scalar(text(
+        "SELECT idversion FROM plan_version WHERE idplan = :idplan AND vigente ORDER BY idversion DESC LIMIT 1"
+    ), {'idplan': plan_id})
+    if version_id is None:
+        next_num = db.scalar(text(
+            "SELECT coalesce(max(numero), 0) + 1 FROM plan_version WHERE idplan = :idplan"
+        ), {'idplan': plan_id}) or 1
+        version_id = db.scalar(text("""
+            INSERT INTO plan_version(idplan, numero, nombre, maxsucursales, estado, vigente)
+            VALUES (:idplan, :numero, :nombre, :maxsucursales, :estado, true)
+            RETURNING idversion
+        """), {'idplan': plan_id, 'numero': next_num, 'nombre': nombre,
+               'maxsucursales': max_sucursales, 'estado': estado})
+    else:
+        db.execute(text("""
+            UPDATE plan_version
+            SET nombre = :nombre, maxsucursales = :maxsucursales, estado = :estado
+            WHERE idversion = :idversion
+        """), {'idversion': version_id, 'nombre': nombre,
+               'maxsucursales': max_sucursales, 'estado': estado})
+    if db.scalar(text("SELECT to_regclass('public.plan_version_funcionalidad') IS NOT NULL")):
+        db.execute(text("DELETE FROM plan_version_funcionalidad WHERE idversion = :idversion"),
+                   {'idversion': version_id})
+        for code in funcionalidades:
+            db.execute(text("""
+                INSERT INTO plan_version_funcionalidad(idversion, codigo)
+                VALUES (:idversion, :codigo)
+                ON CONFLICT DO NOTHING
+            """), {'idversion': version_id, 'codigo': code})
+
+
 def create(db, data, user_id, peer):
     _validate_codes(db, data.funcionalidades)
     with transaction(db):
@@ -124,12 +153,8 @@ def create(db, data, user_id, peer):
         db.add(plan)
         db.flush()
         db.add_all([PlanFuncionalidad(idplan=plan.idplan, codigo=code) for code in data.funcionalidades])
-        version = PlanVersion(idplan=plan.idplan, numero=1, nombre=data.nombre,
-                              maxsucursales=data.maxSucursales, estado=data.estado, vigente=True)
-        db.add(version)
-        db.flush()
-        db.add_all([PlanVersionFuncionalidad(idversion=version.idversion, codigo=code) for code in data.funcionalidades])
-        _audit(db, 'plan_saas_creado', user_id, peer, {'plan': plan.idplan, 'version': 1})
+        _sync_plan_version(db, plan.idplan, data.nombre, data.maxSucursales, data.estado, data.funcionalidades)
+        _audit(db, 'plan_saas_creado', user_id, peer, {'plan': plan.idplan})
     return _view(db, plan)
 
 
@@ -139,45 +164,21 @@ def update(db, plan_id, data, user_id, peer):
         if data.confirmacionImpacto != impact['confirmacionImpacto']:
             raise DomainError(409, 'confirmacion_requerida', 'Revise el impacto y confirme los cambios con información actualizada')
         plan = _plan(db, plan_id)
-        previous = db.scalar(select(PlanVersion).where(PlanVersion.idplan == plan_id, PlanVersion.vigente.is_(True)).with_for_update())
-        if previous is None:
-            raise DomainError(409, 'version_no_disponible', 'El plan no tiene una versión vigente')
-        previous.vigente = False
-        db.flush()
+        previous = _view(db, plan)
         plan.nombre, plan.maxsucursales, plan.estado = data.nombre, data.maxSucursales, data.estado
         db.execute(delete(PlanFuncionalidad).where(PlanFuncionalidad.idplan == plan_id))
         db.add_all([PlanFuncionalidad(idplan=plan_id, codigo=code) for code in data.funcionalidades])
-        version = PlanVersion(idplan=plan_id, numero=previous.numero + 1, nombre=data.nombre,
-                              maxsucursales=data.maxSucursales, estado=data.estado, vigente=True)
-        db.add(version)
-        db.flush()
-        db.add_all([PlanVersionFuncionalidad(idversion=version.idversion, codigo=code) for code in data.funcionalidades])
-        for sub_id in data.suscripcionesSeleccionadas:
-            db.get(SuscripcionVersion, sub_id).idversion = version.idversion
+        _sync_plan_version(db, plan_id, data.nombre, data.maxSucursales, data.estado, data.funcionalidades)
         _audit(db, 'plan_saas_actualizado', user_id, peer,
-               {'plan': plan_id, 'versionAnterior': previous.numero, 'versionNueva': version.numero,
-                'suscripcionesActualizadas': data.suscripcionesSeleccionadas,
-                'suscripcionesConVersionAnterior': impact['conservanVersion']})
+               {'plan': plan_id, 'anterior': previous, 'nuevo': data.model_dump(exclude={'confirmacionImpacto'}),
+                'suscripcionesActivas': impact['suscripcionesActivas'],
+                'suscripcionesAsociadas': impact['suscripcionesAsociadas']})
     return _view(db, plan)
 
 
 def subscription_version(db, subscription_id):
-    """Configuración efectiva que deben consultar las validaciones de suscripción."""
+    """Configuración del plan asociado a la suscripción en el esquema existente."""
     sub = db.get(SuscripcionPlan, subscription_id)
-    mapping = db.get(SuscripcionVersion, subscription_id)
-    version = db.get(PlanVersion, mapping.idversion) if mapping else None
-    if not sub or not mapping or not version or sub.idplan != mapping.idplan or version.idplan != sub.idplan:
-        raise DomainError(409, 'version_suscripcion_no_disponible', 'La suscripción no tiene una versión válida')
-    codes = list(db.scalars(select(PlanVersionFuncionalidad.codigo).where(
-        PlanVersionFuncionalidad.idversion == version.idversion).order_by(PlanVersionFuncionalidad.codigo)))
-    return {'idPlan': version.idplan, 'version': version.numero, 'nombre': version.nombre,
-            'maxSucursales': version.maxsucursales, 'estado': version.estado, 'funcionalidades': codes}
-
-
-def assign_current_version(db, subscription):
-    """Vincula una suscripción nueva a la versión actual dentro de su transacción."""
-    version = db.scalar(select(PlanVersion).where(
-        PlanVersion.idplan == subscription.idplan, PlanVersion.vigente.is_(True)).with_for_update())
-    if version is None or version.estado != 'activo':
-        raise DomainError(409, 'plan_no_disponible', 'El plan no tiene una versión activa disponible')
-    db.add(SuscripcionVersion(idsusc=subscription.idsusc, idplan=subscription.idplan, idversion=version.idversion))
+    if sub is None:
+        raise DomainError(404, 'suscripcion_no_encontrada', 'La suscripción no existe')
+    return _view(db, _plan(db, sub.idplan))

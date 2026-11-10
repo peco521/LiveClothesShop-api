@@ -1,3 +1,4 @@
+﻿import re
 from fastapi import Request
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -7,9 +8,22 @@ class Base(DeclarativeBase):
     pass
 
 
+def _normalize_supabase_url(url: str) -> str:
+    return re.sub(
+        r"^(postgresql(?:\+\w+)?://)postgres\.([a-z0-9]+):([^@]+)@[^:/]+\.pooler\.supabase\.com(?::\d+)?/",
+        r"\1postgres:\3@db.\2.supabase.co:5432/",
+        url,
+    )
+
+
 def create_database(url: str):
+    url = _normalize_supabase_url(url)
     # Creating the engine does not connect or create tables.
-    engine = create_engine(url, pool_pre_ping=True, echo=False, hide_parameters=True)
+    # connect_timeout evita que una peticion quede colgada si el host de la BD
+    # no responde (p. ej. pooler inaccesible desde la red local).
+    connect_args = {"connect_timeout": 5} if url.startswith("postgresql") else {}
+    engine = create_engine(url, pool_pre_ping=True, echo=False, hide_parameters=True,
+                           connect_args=connect_args)
     return engine, sessionmaker(bind=engine, expire_on_commit=False)
 
 
@@ -77,21 +91,21 @@ def fill_tenant_on_pending_objects(session, flush_context, instances):
 
 def tenant_context(db, idemp: int):
     if not isinstance(idemp, int) or idemp <= 0:
-        raise ValueError("Empresa inválida")
+        raise ValueError("Empresa invÃ¡lida")
     existing = db.info.get("idemp")
     if existing is not None and existing != idemp:
-        raise ValueError("No se puede cambiar la empresa de una sesión")
+        raise ValueError("No se puede cambiar la empresa de una sesiÃ³n")
     db.info["idemp"] = idemp
     if db.info.get("multitenant") and db.in_transaction() and is_postgresql(db):
         db.execute(text("SELECT set_config('app.idemp', :idemp, true)"), {"idemp": str(idemp)})
 
 
 def is_postgresql(db) -> bool:
-    """Indica si la sesión puede usar los procedimientos de la BD oficial."""
+    """Indica si la sesiÃ³n puede usar los procedimientos de la BD oficial."""
     return db.get_bind().dialect.name == "postgresql"
 
 
 def sqlstate(exc) -> str | None:
-    """Extrae SQLSTATE sin incluir texto ni parámetros sensibles del driver."""
+    """Extrae SQLSTATE sin incluir texto ni parÃ¡metros sensibles del driver."""
     original = getattr(exc, "orig", None)
     return getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)

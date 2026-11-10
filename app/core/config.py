@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     # BYPASSRLS y NO se usa nunca en las rutas HTTP de empresa. Si falta, las
     # rutas /api/saas responden 503 plataforma_no_configurada.
     platform_database_url: SecretStr | None = None
+    # Uso explícito de DATABASE_URL para plataforma, solo en desarrollo local.
+    # Comparte credenciales con el motor empresarial y no brinda aislamiento por rol.
+    platform_use_database_url: bool = False
+    backups_directory: str = str(Path(__file__).resolve().parents[2] / '.local' / 'saas-backups')
+    backups_pg_dump: str = ''
+    backups_timeout_seconds: int = Field(default=1800, ge=30, le=14400)
     # Modo demostracion: habilita el endpoint de credenciales de prueba y la
     # carga de tenants de demostracion. Prohibido en produccion.
     demo_mode: bool = False
@@ -80,6 +86,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_security(self):
+        if self.platform_use_database_url and self.environment != "development":
+            raise ValueError("PLATFORM_USE_DATABASE_URL solo está permitido en desarrollo")
+        if self.platform_use_database_url and self.platform_database_url is not None:
+            raise ValueError("Configure PLATFORM_DATABASE_URL o PLATFORM_USE_DATABASE_URL, no ambos")
         if self.environment == "production" and not self.multitenant_enabled:
             raise ValueError("MULTITENANT_ENABLED es obligatorio en producción")
         if self.environment == "production" and self.demo_mode:

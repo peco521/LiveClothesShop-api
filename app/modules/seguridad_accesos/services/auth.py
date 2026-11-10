@@ -12,12 +12,63 @@ from app.core.security import digest, new_credential, utcnow
 from app.modules.seguridad_accesos.models import RecuperacionContrasena, Usuario
 from app.modules.seguridad_accesos.repositories import rol, usuario
 from app.modules.seguridad_accesos.repositories import recuperacion_contrasena as recovery
-from app.modules.seguridad_accesos.schemas.auth import AuthResponse, RegistroResponse, RolResponse, UsuarioResponse
+from app.modules.seguridad_accesos.schemas.auth import (
+    AuthResponse, MiSuscripcionResponse, RegistroResponse, RolResponse, UsuarioResponse,
+)
 from app.modules.seguridad_accesos.services.bitacora import record
 
 
 def authentication_failed():
     return DomainError(401, "autenticacion_rechazada", "No se pudo autenticar la solicitud")
+
+
+def _resolve_empresa(db, codigo: str) -> int | None:
+    has_fn = db.scalar(
+        text("SELECT to_regprocedure('public.auth_resolver_empresa(character varying)') IS NOT NULL")
+    )
+    if has_fn:
+        return db.scalar(text("SELECT auth_resolver_empresa(:codigo)"), {"codigo": codigo})
+    return db.scalar(
+        text("""
+            SELECT e.idemp FROM public.empresa e
+            WHERE e.codigo = :codigo AND e.estado = 'activa'
+              AND EXISTS (SELECT 1 FROM public.suscripcion s
+                          WHERE s.idemp = e.idemp AND s.estado = 'activa'
+                            AND CURRENT_DATE BETWEEN s.fechainicio AND s.fechavencimiento)
+        """),
+        {"codigo": codigo},
+    )
+
+
+def list_login_companies(db) -> list[dict[str, str]]:
+    if not is_postgresql(db):
+        return []
+    rows = db.execute(
+        text("""
+            SELECT e.codigo, e.nombre
+            FROM public.empresa e
+            WHERE e.estado = 'activa'
+              AND EXISTS (SELECT 1 FROM public.suscripcion s
+                          WHERE s.idemp = e.idemp AND s.estado = 'activa'
+                            AND CURRENT_DATE BETWEEN s.fechainicio AND s.fechavencimiento)
+            ORDER BY e.nombre, e.codigo
+        """)
+    ).mappings().all()
+    return [{"codigo": row["codigo"], "nombre": row["nombre"]} for row in rows]
+
+
+def _resolve_tenant_client_role(db, settings, tenant_id: int):
+    from sqlalchemy import select
+    for candidate_id in (f"E{tenant_id}-CLI", settings.cliente_rol_id):
+        role = rol.get(db, candidate_id)
+        if (role is not None and role.idemp == tenant_id and role.estado == "activo"
+                and set(rol.permissions(db, role.nro)).issubset(
+                    {"CU10", "CU11", "CU12", "CU13", "CU14", "CU15", "CU17"})
+                and not db.scalar(select(Usuario.idusuario).where(
+                    Usuario.idemp == tenant_id, Usuario.nrorol == role.nro,
+                    Usuario.tipo != "C").limit(1))):
+            return role
+    return None
 
 
 def register(db, data, settings, passwords, peer, access_tokens):
@@ -28,13 +79,37 @@ def register(db, data, settings, passwords, peer, access_tokens):
     user_id = str(uuid4())
     try:
         with db.begin():
-            if usuario.by_email(db, email):
-                raise DomainError(409, "correo_duplicado", "El correo ya está registrado")
-            if rol.public_role(db, settings.cliente_rol_id) is None:
-                raise DomainError(503, "registro_no_disponible", "El registro no está disponible")
+            idemp = None
+            role_id = settings.cliente_rol_id
+            if settings.multitenant_enabled:
+                if not is_postgresql(db):
+                    raise DomainError(503, "registro_no_disponible", "El registro no está disponible")
+                codigo_emp = data.empresa
+                if not codigo_emp:
+                    companies = list_login_companies(db)
+                    if len(companies) == 1:
+                        codigo_emp = companies[0]["codigo"]
+                    else:
+                        raise DomainError(422, "empresa_requerida", "Selecciona la empresa en la que deseas registrarte")
+                idemp = _resolve_empresa(db, codigo_emp)
+                if idemp is None:
+                    raise DomainError(503, "registro_no_disponible", "La empresa seleccionada no está disponible")
+                tenant_context(db, idemp)
+                db.info["empresa"] = codigo_emp
+                if usuario.by_email(db, email):
+                    raise DomainError(409, "correo_duplicado", "El correo ya está registrado")
+                tenant_role = _resolve_tenant_client_role(db, settings, idemp)
+                if tenant_role is None:
+                    raise DomainError(503, "registro_no_disponible", "El registro no está disponible")
+                role_id = tenant_role.nro
+            else:
+                if usuario.by_email(db, email):
+                    raise DomainError(409, "correo_duplicado", "El correo ya está registrado")
+                if rol.public_role(db, settings.cliente_rol_id) is None:
+                    raise DomainError(503, "registro_no_disponible", "El registro no está disponible")
             client_code = secrets.token_hex(5)
             usuario.create_client(db, user_id=user_id, data=data, password_hash=encoded,
-                                  role_id=settings.cliente_rol_id, client_code=client_code)
+                                  role_id=role_id, client_code=client_code, idemp=idemp)
             record(db, "cliente_registrado", user_id, peer, True)
             # CU01: el registro público abre sesión con el mismo mecanismo que el
             # login (token en memoria + huella de la contraseña) y su misma auditoría.
@@ -44,7 +119,7 @@ def register(db, data, settings, passwords, peer, access_tokens):
             expires = utcnow() + timedelta(hours=settings.session_hours)
             response = RegistroResponse(idUsuario=user_id, correo=email,
                                         sesion=public_identity(db, account, expires))
-            credential = access_tokens.issue(account.idusuario, account.contrasena, expires)
+            credential = access_tokens.issue(account.idusuario, account.contrasena, expires, db.info.get("idemp"))
     except IntegrityError:
         if credential is not None:
             access_tokens.revoke(credential)
@@ -102,8 +177,8 @@ def login(db, data, settings, passwords, peer, access_tokens, *, allowed_types=N
             if settings.multitenant_enabled:
                 if not data.empresa or not is_postgresql(db):
                     raise authentication_failed()
-                # The only pre-tenant lookup is a restricted SECURITY DEFINER function.
-                idemp = db.scalar(text("SELECT auth_resolver_empresa(:codigo)"), {"codigo": data.empresa})
+                # Pre-tenant lookup via restricted SECURITY DEFINER function or active tenant query.
+                idemp = _resolve_empresa(db, data.empresa)
                 if idemp is None:
                     raise authentication_failed()
                 tenant_context(db, idemp)
@@ -196,6 +271,44 @@ def platform_session(db, credential, access_tokens):
 def current_session(db, credential, access_tokens):
     _, identity = authenticated_session(db, credential, access_tokens)
     return identity
+
+
+def company_subscription_summary(db, credential, access_tokens) -> MiSuscripcionResponse | None:
+    access, _ = authenticated_session(db, credential, access_tokens)
+    if not db.info.get("multitenant") or not is_postgresql(db) or not access.idemp:
+        return None
+    row = db.execute(text("""
+        SELECT e.codigo AS "empresaCodigo", e.nombre AS "empresaNombre",
+               p.idplan AS "idPlan", p.nombre AS plan,
+               COALESCE(p.maxsucursales, 0) AS "maxSucursales",
+               s.estado AS "estadoSuscripcion",
+               s.fechainicio AS "fechaInicio",
+               s.fechavencimiento AS "fechaVencimiento",
+               (SELECT count(*) FROM sucursal su
+                 WHERE su.idemp = e.idemp AND su.estado = 'activo') AS "sucursalesActivas"
+        FROM empresa e
+        LEFT JOIN suscripcion s ON s.idemp = e.idemp AND s.estado = 'activa'
+        LEFT JOIN plan p ON p.idplan = s.idplan
+        WHERE e.idemp = :idemp
+    """), {"idemp": access.idemp}).mappings().first()
+    if row is None:
+        return None
+    funcionalidades: list[str] = []
+    if row["idPlan"] is not None:
+        funcionalidades = list(db.scalars(text(
+            "SELECT codigo FROM plan_funcionalidad WHERE idplan = :idplan ORDER BY codigo"
+        ), {"idplan": row["idPlan"]}))
+    return MiSuscripcionResponse(
+        empresaCodigo=row["empresaCodigo"],
+        empresaNombre=row["empresaNombre"],
+        plan=row["plan"],
+        estadoSuscripcion=row["estadoSuscripcion"],
+        fechaInicio=row["fechaInicio"],
+        fechaVencimiento=row["fechaVencimiento"],
+        sucursalesActivas=int(row["sucursalesActivas"] or 0),
+        maxSucursales=int(row["maxSucursales"] or 0),
+        funcionalidades=funcionalidades,
+    )
 
 
 def authenticated_session(db, credential, access_tokens):

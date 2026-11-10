@@ -1,7 +1,7 @@
 from datetime import date
 
 from sqlalchemy import Boolean, Date, ForeignKey, Identity, Integer, SmallInteger, String, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.core.database import Base
 
@@ -40,12 +40,19 @@ class SuscripcionPlan(Base):
     estado: Mapped[str] = mapped_column(String(20))
 
 
-class PlanVersion(Base):
+# Modelos conservados para la propuesta anterior de migración y sus pruebas.
+# No forman parte del esquema actual de Supabase ni son usados por el servicio
+# de planes compartidos. Su metadata es independiente del esquema actual.
+class _VersionProposalBase(DeclarativeBase):
+    pass
+
+
+class PlanVersion(_VersionProposalBase):
     __tablename__ = 'plan_version'
     __table_args__ = (UniqueConstraint('idplan', 'numero'),)
 
     idversion: Mapped[int] = mapped_column(Integer, Identity(), primary_key=True)
-    idplan: Mapped[int] = mapped_column(ForeignKey('plan.idplan'))
+    idplan: Mapped[int] = mapped_column(ForeignKey(Plan.idplan))
     numero: Mapped[int] = mapped_column(Integer)
     nombre: Mapped[str] = mapped_column(String(30))
     maxsucursales: Mapped[int] = mapped_column(SmallInteger)
@@ -53,16 +60,16 @@ class PlanVersion(Base):
     vigente: Mapped[bool] = mapped_column(Boolean)
 
 
-class PlanVersionFuncionalidad(Base):
+class PlanVersionFuncionalidad(_VersionProposalBase):
     __tablename__ = 'plan_version_funcionalidad'
 
     idversion: Mapped[int] = mapped_column(ForeignKey('plan_version.idversion'), primary_key=True)
-    codigo: Mapped[str] = mapped_column(ForeignKey('funcionalidad_saas.codigo'), primary_key=True)
+    codigo: Mapped[str] = mapped_column(ForeignKey(FuncionalidadSaas.codigo), primary_key=True)
 
 
-class SuscripcionVersion(Base):
+class SuscripcionVersion(_VersionProposalBase):
     __tablename__ = 'suscripcion_plan_version'
 
-    idsusc: Mapped[int] = mapped_column(ForeignKey('suscripcion.idsusc'), primary_key=True)
-    idplan: Mapped[int] = mapped_column(ForeignKey('plan.idplan'))
+    idsusc: Mapped[int] = mapped_column(ForeignKey(SuscripcionPlan.idsusc), primary_key=True)
+    idplan: Mapped[int] = mapped_column(ForeignKey(Plan.idplan))
     idversion: Mapped[int] = mapped_column(ForeignKey('plan_version.idversion'))

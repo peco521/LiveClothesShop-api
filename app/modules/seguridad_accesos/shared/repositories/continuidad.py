@@ -25,24 +25,37 @@ def lock(db):
 
 
 def actor(db, actor_id):
-    return db.scalar(select(Usuario).where(Usuario.idusuario == actor_id)
+    filters = [Usuario.idusuario == actor_id]
+    if db.info.get("multitenant") is True:
+        filters.append(Usuario.idemp == (db.info.get("idemp") or 0))
+    return db.scalar(select(Usuario).where(*filters)
                      .execution_options(populate_existing=True))
 
 
 def has_permission(db, role_id, permission):
     # CU06: un rol dado de baja no autoriza ninguna función, ni siquiera a los
     # usuarios que ya lo tenían asignado.
-    return db.scalar(select(RolFuncion.idfun).join(Rol, Rol.nro == RolFuncion.nrorol).where(
-        RolFuncion.nrorol == role_id, RolFuncion.idfun == permission,
-        Rol.estado == "activo")) is not None
+    filters = [RolFuncion.nrorol == role_id, RolFuncion.idfun == permission, Rol.estado == "activo"]
+    if db.info.get("multitenant") is True:
+        filters.append(Rol.idemp == (db.info.get("idemp") or 0))
+    return db.scalar(select(RolFuncion.idfun).join(Rol, Rol.nro == RolFuncion.nrorol).where(*filters)) is not None
 
 
 def eligible_count(db, public_role_id):
     # CU05/CU06: un rol inactivo o un empleado dado de baja ya no cuenta como
     # usuario capaz de administrar CU06.
+    filters = [
+        Rol.nro != public_role_id, RolFuncion.idfun == "CU06",
+        Rol.estado == "activo",
+        or_(Usuario.tipo != "E", Empleado.estado == "activo"),
+    ]
+    if db.info.get("multitenant") is True:
+        tenant = db.info.get("idemp") or 0
+        filters.extend([
+            Usuario.idemp == tenant,
+            Rol.idemp == tenant,
+            Rol.nro != f"E{tenant}-CLI",
+        ])
     return db.scalar(select(func.count()).select_from(Usuario).join(Rol, Rol.nro == Usuario.nrorol)
                      .join(RolFuncion, RolFuncion.nrorol == Rol.nro)
-                     .outerjoin(Empleado, Empleado.idusuario == Usuario.idusuario).where(
-                         Rol.nro != public_role_id, RolFuncion.idfun == "CU06",
-                         Rol.estado == "activo",
-                         or_(Usuario.tipo != "E", Empleado.estado == "activo")))
+                     .outerjoin(Empleado, Empleado.idusuario == Usuario.idusuario).where(*filters))

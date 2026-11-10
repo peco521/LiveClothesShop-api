@@ -26,6 +26,7 @@ from app.modules.cliente_experiencia_compra.shared.models.comercio import (
     Venta,
 )
 from app.modules.cliente_experiencia_compra.shared.repositories import catalogo as catalogo_repository
+from app.modules.cliente_experiencia_compra.shared.repositories.tenant import scoped
 
 # Estados de reserva que expresan interés real. Canceladas y vencidas no aportan
 # señal al perfil porque el cliente renunció a lo que había reservado.
@@ -41,42 +42,54 @@ def _pago_aprobado():
 def compras_pagadas(db, user_id):
     """Líneas de compras propias pagadas (la señal más fuerte del perfil)."""
     return db.execute(
-        select(Producto.idprod, Producto.idcat, Producto.idmarca, Producto.idcol,
-               DetalleVenta.cantidad.label("cantidad"),
-               DetalleVenta.preciounitario.label("precio"))
-        .join(VarianteProd, VarianteProd.idvariante == DetalleVenta.idvar)
-        .join(Producto, Producto.idprod == VarianteProd.idprod)
-        .join(Venta, Venta.nroventa == DetalleVenta.nroventa)
-        .where(Venta.idusuariocl == user_id,
-               Venta.estado != "anulada",
-               _pago_aprobado())
+        scoped(
+            db,
+            select(Producto.idprod, Producto.idcat, Producto.idmarca, Producto.idcol,
+                   DetalleVenta.cantidad.label("cantidad"),
+                   DetalleVenta.preciounitario.label("precio"))
+            .join(VarianteProd, VarianteProd.idvariante == DetalleVenta.idvar)
+            .join(Producto, Producto.idprod == VarianteProd.idprod)
+            .join(Venta, Venta.nroventa == DetalleVenta.nroventa)
+            .where(Venta.idusuariocl == user_id,
+                   Venta.estado != "anulada",
+                   _pago_aprobado()),
+            Producto, VarianteProd, DetalleVenta, Venta, Pago,
+        )
     ).all()
 
 
 def reservas_vigentes(db, user_id):
     """Líneas de reservas propias vigentes (interés declarado por el cliente)."""
     return db.execute(
-        select(Producto.idprod, Producto.idcat, Producto.idmarca, Producto.idcol,
-               DetalleReserva.cantidad.label("cantidad"),
-               VarianteProd.precio.label("precio"))
-        .join(VarianteProd, VarianteProd.idvariante == DetalleReserva.idvar)
-        .join(Producto, Producto.idprod == VarianteProd.idprod)
-        .join(Reserva, Reserva.nroreserva == DetalleReserva.nroreserva)
-        .where(Reserva.idusuariocl == user_id,
-               Reserva.estado.in_(ESTADOS_RESERVA_INTERES))
+        scoped(
+            db,
+            select(Producto.idprod, Producto.idcat, Producto.idmarca, Producto.idcol,
+                   DetalleReserva.cantidad.label("cantidad"),
+                   VarianteProd.precio.label("precio"))
+            .join(VarianteProd, VarianteProd.idvariante == DetalleReserva.idvar)
+            .join(Producto, Producto.idprod == VarianteProd.idprod)
+            .join(Reserva, Reserva.nroreserva == DetalleReserva.nroreserva)
+            .where(Reserva.idusuariocl == user_id,
+                   Reserva.estado.in_(ESTADOS_RESERVA_INTERES)),
+            Producto, VarianteProd, DetalleReserva, Reserva,
+        )
     ).all()
 
 
 def carrito_activo(db, user_id):
     """Líneas del carrito activo propio (interés inmediato, solo lectura)."""
     return db.execute(
-        select(Producto.idprod, Producto.idcat, Producto.idmarca, Producto.idcol,
-               DetalleCarro.cantidad.label("cantidad"),
-               VarianteProd.precio.label("precio"))
-        .join(VarianteProd, VarianteProd.idvariante == DetalleCarro.idvar)
-        .join(Producto, Producto.idprod == VarianteProd.idprod)
-        .join(Carrito, Carrito.idcarrito == DetalleCarro.idcarrito)
-        .where(Carrito.idusuariocl == user_id, Carrito.estado == "activo")
+        scoped(
+            db,
+            select(Producto.idprod, Producto.idcat, Producto.idmarca, Producto.idcol,
+                   DetalleCarro.cantidad.label("cantidad"),
+                   VarianteProd.precio.label("precio"))
+            .join(VarianteProd, VarianteProd.idvariante == DetalleCarro.idvar)
+            .join(Producto, Producto.idprod == VarianteProd.idprod)
+            .join(Carrito, Carrito.idcarrito == DetalleCarro.idcarrito)
+            .where(Carrito.idusuariocl == user_id, Carrito.estado == "activo"),
+            Producto, VarianteProd, DetalleCarro, Carrito,
+        )
     ).all()
 
 
@@ -86,9 +99,13 @@ def temporadas_por_coleccion(db, colecciones):
     if not ids:
         return {}
     rows = db.execute(
-        select(TempColeccion.idcol, Temporada.idtemp, Temporada.nombre)
-        .join(Temporada, Temporada.idtemp == TempColeccion.idtemp)
-        .where(TempColeccion.idcol.in_(ids))
+        scoped(
+            db,
+            select(TempColeccion.idcol, Temporada.idtemp, Temporada.nombre)
+            .join(Temporada, Temporada.idtemp == TempColeccion.idtemp)
+            .where(TempColeccion.idcol.in_(ids)),
+            TempColeccion, Temporada,
+        )
     ).all()
     agrupadas: dict[int, list[tuple[int, str]]] = {}
     for idcol, idtemp, nombre in rows:
@@ -118,12 +135,16 @@ def popularidad(db, product_ids):
     if not product_ids:
         return {}
     rows = db.execute(
-        select(VarianteProd.idprod, func.coalesce(func.sum(DetalleVenta.cantidad), 0))
-        .join(DetalleVenta, DetalleVenta.idvar == VarianteProd.idvariante)
-        .join(Venta, Venta.nroventa == DetalleVenta.nroventa)
-        .where(VarianteProd.idprod.in_(product_ids),
-               Venta.estado != "anulada",
-               _pago_aprobado())
-        .group_by(VarianteProd.idprod)
+        scoped(
+            db,
+            select(VarianteProd.idprod, func.coalesce(func.sum(DetalleVenta.cantidad), 0))
+            .join(DetalleVenta, DetalleVenta.idvar == VarianteProd.idvariante)
+            .join(Venta, Venta.nroventa == DetalleVenta.nroventa)
+            .where(VarianteProd.idprod.in_(product_ids),
+                   Venta.estado != "anulada",
+                   _pago_aprobado())
+            .group_by(VarianteProd.idprod),
+            VarianteProd, DetalleVenta, Venta, Pago,
+        )
     ).all()
     return {idprod: int(total or 0) for idprod, total in rows}

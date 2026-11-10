@@ -13,6 +13,7 @@ class PublicInput(BaseModel):
 
 
 class Registro(PublicInput):
+    empresa: Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z0-9-]{1,30}$")] | None = None
     ci: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
     # Compatibilidad HTTP con los formularios existentes; columna SQL: nombre.
     nombre: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)] = Field(
@@ -74,6 +75,23 @@ class UsuarioResponse(BaseModel):
     tipo: Literal["A", "C", "E", "S"]
     nombre: str | None = Field(validation_alias=AliasChoices("nombre", "nombres"), serialization_alias="nombres")
     correo: str
+
+
+class EmpresaAccesoResponse(BaseModel):
+    codigo: str
+    nombre: str
+
+
+class MiSuscripcionResponse(BaseModel):
+    empresaCodigo: str
+    empresaNombre: str
+    plan: str | None = None
+    estadoSuscripcion: str | None = None
+    fechaInicio: date | None = None
+    fechaVencimiento: date | None = None
+    sucursalesActivas: int = 0
+    maxSucursales: int = 0
+    funcionalidades: list[str] = Field(default_factory=list)
 
 
 class RolResponse(BaseModel):

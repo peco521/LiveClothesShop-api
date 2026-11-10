@@ -1,3 +1,5 @@
+-- PROPUESTA ANTERIOR de versionado individual: no corresponde al esquema real
+-- ni al comportamiento actual de planes compartidos. No ejecutar para este módulo.
 -- Migración del esquema SaaS NUEVO; no es migración de la instalación legacy.
 -- Ejecutar una sola vez después de 03 y antes de 04_FashionStore_SaaS_ROLES.sql.
 -- Crea una versión inicial equivalente a cada plan y asigna todas las

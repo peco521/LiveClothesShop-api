@@ -13,6 +13,7 @@ from app.core.errors import DomainError
 from app.modules.seguridad_accesos.models import Cliente, Usuario
 from app.modules.seguridad_accesos.cu05_usuarios_empleados.models.empleado import Empleado
 from app.modules.cliente_experiencia_compra.shared.models.comercio import Venta
+from app.modules.cliente_experiencia_compra.shared.repositories.tenant import scoped
 from app.modules.cliente_experiencia_compra.cu15_historial_compra.schemas.historial import CompraDetalle, HistorialCompras
 from app.modules.cliente_experiencia_compra.cu15_historial_compra.services import historial as service
 
@@ -64,8 +65,8 @@ router = APIRouter(prefix="/api/admin/historial-compras", tags=["CU15 Historial 
 
 
 def permitted_customer(db, user_id, branch_id):
-    query = select(Usuario).join(Cliente, Cliente.idusuario == Usuario.idusuario).where(
-        Usuario.idusuario == user_id, Usuario.tipo == "C")
+    query = scoped(db, select(Usuario).join(Cliente, Cliente.idusuario == Usuario.idusuario).where(
+        Usuario.idusuario == user_id, Usuario.tipo == "C"), Usuario, Cliente, Venta)
     if branch_id is not None:
         query = query.where(select(Venta.nroventa).where(Venta.idusuariocl == Usuario.idusuario,
                                                         Venta.nrosuc == branch_id).exists())
@@ -85,8 +86,11 @@ def search_customers(filters: Annotated[Filtros, Query()], db: Session = Depends
     if branch_id is not None:
         conditions.append(select(Venta.nroventa).where(Venta.idusuariocl == Usuario.idusuario,
                                                        Venta.nrosuc == branch_id).exists())
-    query = select(Usuario).join(Cliente, Cliente.idusuario == Usuario.idusuario).where(*conditions)
-    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    query = scoped(db, select(Usuario).join(Cliente, Cliente.idusuario == Usuario.idusuario).where(*conditions),
+                   Usuario, Cliente, Venta)
+    count_query = scoped(db, select(func.count()).select_from(Usuario).join(
+        Cliente, Cliente.idusuario == Usuario.idusuario).where(*conditions), Usuario, Cliente, Venta)
+    total = db.scalar(count_query) or 0
     rows = db.scalars(query.order_by(Usuario.nombre, Usuario.apellidopat, Usuario.idusuario)
                       .offset(filters.offset).limit(filters.limit)).all()
     return ClientesListado(items=[ClienteResumen(idUsuario=u.idusuario, ci=u.ci, nombre=u.nombre,

@@ -67,6 +67,10 @@ def administrative_client_role(db, settings):
     if not isinstance(tenant_id, int) or tenant_id <= 0:
         raise incoherent()
     role = rol.get(db, f"E{tenant_id}-CLI")
+    if role is None or role.idemp != tenant_id:
+        candidate = rol.get(db, settings.cliente_rol_id)
+        if candidate is not None and candidate.idemp == tenant_id:
+            role = candidate
     if (role is None or role.idemp != tenant_id or role.estado != "activo"
             or not set(rol.permissions(db, role.nro)).issubset(
                 {"CU10", "CU11", "CU12", "CU13", "CU14", "CU15", "CU17"})

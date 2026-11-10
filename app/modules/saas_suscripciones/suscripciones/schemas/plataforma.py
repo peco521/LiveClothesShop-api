@@ -51,7 +51,7 @@ class IdentidadVisual(PlatformInput):
 
 
 class NuevoAdministrador(PlatformInput):
-    idUsuario: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+    idUsuario: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)] | None = None
     ci: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
     nombre: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
     apellidoPat: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
@@ -67,15 +67,29 @@ class NuevoAdministrador(PlatformInput):
 
     _correo = field_validator("correo", mode="before")(_normalize_email)
 
+    @field_validator("idUsuario", mode="before")
+    @classmethod
+    def _normalizar_id_usuario(cls, value):
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
 
 class NuevaEmpresa(PlatformInput):
-    codigo: Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z0-9-]{1,30}$")]
+    codigo: Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z0-9-]{1,30}$")] | None = None
     nombre: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
     nit: Annotated[str, StringConstraints(strip_whitespace=True, max_length=30)] | None = None
     idPlan: int = Field(ge=1, le=32767)
     fechaInicio: date
     fechaVencimiento: date
     administrador: NuevoAdministrador
+
+    @field_validator("codigo", mode="before")
+    @classmethod
+    def _normalizar_codigo(cls, value):
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @field_validator("fechaVencimiento")
     @classmethod

@@ -1,14 +1,16 @@
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.core.database import get_platform_db
 from app.core.errors import DomainError
-from app.modules.plataforma_saas import services
-from app.modules.plataforma_saas.dependencies import require_platform_permission
-from app.modules.plataforma_saas.schemas import (
+from app.modules.saas_suscripciones.suscripciones.services import plataforma as services
+from app.modules.saas_suscripciones.shared.backups import backup_manager, audit_backup
+from app.modules.saas_suscripciones.shared.dependencies import require_platform_permission
+from app.modules.saas_suscripciones.suscripciones.schemas.plataforma import (
     AccesoApoyo, CambioEstado, CambioPlan, EmpresaResumen, IdentidadVisual,
     NuevaEmpresa, UsoSucursales,
 )
@@ -20,6 +22,7 @@ PLANES = "SAAS-PLANES"
 AUDITORIA = "SAAS-AUDITORIA"
 DEMO = "SAAS-DEMO"
 SOPORTE = "SAAS-SOPORTE"
+RESPALDOS = "SAAS-RESPALDOS"
 
 
 def _peer(request):
@@ -30,8 +33,14 @@ def _credentials_path(request) -> Path:
     configured = request.app.state.settings.demo_credentials_file.strip()
     if configured:
         return Path(configured).expanduser().resolve()
-    root = Path(__file__).resolve().parents[3]
+    root = Path(__file__).resolve().parents[5]
     return root / ".local" / "demo_credentials.json"
+
+
+@router.get("/resumen")
+def resumen_plataforma(db: Session = Depends(get_platform_db),
+                      identity=Depends(require_platform_permission(EMPRESAS))):
+    return services.resumen_plataforma(db, incluir_auditoria=AUDITORIA in identity.permisos)
 
 
 @router.get("/empresas", response_model=list[EmpresaResumen])
@@ -87,9 +96,44 @@ def uso_sucursales(idemp: int, db: Session = Depends(get_platform_db),
 
 @router.get("/auditoria")
 def listar_auditoria(limite: int = Query(default=100, ge=1, le=500),
+                     desplazamiento: int = Query(default=0, ge=0),
+                     accion: str = Query(default='', max_length=150),
                      db: Session = Depends(get_platform_db),
                      identity=Depends(require_platform_permission(AUDITORIA))):
-    return services.listar_auditoria(db, limite)
+    return services.listar_auditoria(db, limite, desplazamiento, accion)
+
+
+@router.get('/respaldos')
+def listar_respaldos(request: Request,
+                    identity=Depends(require_platform_permission(RESPALDOS))):
+    return backup_manager(request).list()
+
+
+@router.post('/respaldos', status_code=202)
+def crear_respaldo(request: Request, background: BackgroundTasks,
+                   db: Session = Depends(get_platform_db),
+                   identity=Depends(require_platform_permission(RESPALDOS))):
+    manager = backup_manager(request)
+    job, lease = manager.prepare()
+    try:
+        with db.begin():
+            audit_backup(db, identity.usuario.idUsuario, 'respaldo_plataforma_solicitado', job['id'], _peer(request))
+    except Exception:
+        manager.abort(job, lease)
+        raise
+    background.add_task(manager.run, job['id'], lease)
+    return job
+
+
+@router.get('/respaldos/{job_id}/descarga')
+def descargar_respaldo(job_id: str, request: Request,
+                       db: Session = Depends(get_platform_db),
+                       identity=Depends(require_platform_permission(RESPALDOS))):
+    path = backup_manager(request).download(job_id)
+    with db.begin():
+        audit_backup(db, identity.usuario.idUsuario, 'respaldo_plataforma_descargado', job_id, _peer(request))
+    return FileResponse(path, media_type='application/octet-stream',
+                        filename=f'fashionstore-backup-{job_id}.dump')
 
 
 @router.post("/soporte/acceso")

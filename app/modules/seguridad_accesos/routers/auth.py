@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.dependencies import current_credential
 from app.modules.seguridad_accesos.schemas.auth import (
-    AuthResponse, Login, LoginPlataforma, Registro, RegistroResponse,
-    RecuperarContrasena, RestablecerContrasena,
+    AuthResponse, EmpresaAccesoResponse, Login, LoginPlataforma, MiSuscripcionResponse,
+    Registro, RegistroResponse, RecuperarContrasena, RestablecerContrasena,
 )
 from app.modules.seguridad_accesos.services import auth
 from app.modules.seguridad_accesos.services.recovery_delivery import get_recovery_delivery
@@ -44,6 +44,13 @@ def resolve_identity(db, request, credential):
     else:
         identity = auth.current_session(db, credential, request.app.state.access_tokens)
     return identity
+
+
+@router.get("/empresas", response_model=list[EmpresaAccesoResponse])
+def list_companies(request: Request):
+    factory = _platform_factory(request) or request.app.state.session_factory
+    with factory() as db:
+        return auth.list_login_companies(db)
 
 
 @router.post("/recuperar-contrasena", status_code=202)
@@ -122,6 +129,15 @@ def me(request: Request, credential: str = Depends(current_credential)):
         if plataforma:
             db.info["plataforma"] = True
         return resolve_identity(db, request, credential)
+
+
+@router.get("/mi-suscripcion", response_model=MiSuscripcionResponse | None)
+def my_subscription(request: Request, credential: str = Depends(current_credential)):
+    db, plataforma = open_identity_session(request, credential)
+    if plataforma:
+        return None
+    with db:
+        return auth.company_subscription_summary(db, credential, request.app.state.access_tokens)
 
 
 @router.post("/logout", status_code=204)

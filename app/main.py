@@ -44,7 +44,7 @@ from app.modules.ventas_reportes.cu24_registrar_venta.routers.ventas import rout
 from app.modules.ventas_reportes.cu25_reportes.routers.reportes import router as cu25_router
 from app.modules.ventas_reportes.cu25_reportes.routers.dinamicos import router as cu25_dinamicos_router
 from app.modules.sincronizacion.routers import router as sync_router
-from app.modules.plataforma_saas.routers import router as plataforma_saas_router
+from app.modules.saas_suscripciones.suscripciones.routers.plataforma import router as plataforma_saas_router
 from app.modules.saas_suscripciones.planes_funcionalidades.routers.planes import router as saas_planes_router
 
 
@@ -62,7 +62,8 @@ MODULE_PREFIXES = {
     "cu12": ("/api/cliente/carrito",),
     "cu13": ("/api/cliente/compras",),
     "cu14": ("/api/cliente/pagos",),
-    "cu15": ("/api/cliente/historial-compras",),
+    "cu15": ("/api/cliente/historial-compras", "/api/admin/historial-compras"),
+    "cu17": ("/api/cliente/recomendaciones",),
     "cu20": ("/api/admin/inventario",),
     "cu19": ("/api/admin/proveedores",),
     "cu18": ("/api/admin/catalogo",),
@@ -80,6 +81,7 @@ MODULE_PREFIXES = {
 
 # Rutas de autenticacion siempre disponibles: no exponen datos de empresa.
 AUTH_PATHS = frozenset({
+    "/api/auth/empresas", "/api/auth/mi-suscripcion",
     "/api/auth/login", "/api/auth/login/admin", "/api/auth/login/cliente",
     "/api/auth/login/saas", "/api/auth/me", "/api/auth/logout",
     "/api/auth/registro", "/api/auth/recuperar-contrasena", "/api/auth/restablecer-contrasena",
@@ -123,9 +125,12 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
         # empresa y no se expone al frontend ni al movil.
         platform_engine = None
         platform_factory = None
-        if config.platform_database_url is not None:
+        platform_url = config.platform_database_url
+        if platform_url is None and config.platform_use_database_url:
+            platform_url = config.database_url
+        if platform_url is not None:
             platform_engine, platform_factory = create_platform_database(
-                config.platform_database_url.get_secret_value())
+                platform_url.get_secret_value())
         application.state.platform_session_factory = platform_factory
         async def expire_reservations():
             expire = import_module('app.modules.Reservas y Atencion al cliente.cu22_gestionar_reservas_sucursal.services.reservas').expire

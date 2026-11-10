@@ -83,7 +83,8 @@ def validate_role(db, role_id, settings):
         raise DomainError(422, "rol_inactivo", "El rol seleccionado está inactivo")
     # public_role() rejects any internal user sharing CLIENTE_ROL_ID: that would
     # disable CU01. This is not a SuperAdmin or permission-subset policy.
-    if role.nro == settings.cliente_rol_id:
+    if role.nro == settings.cliente_rol_id or (
+            db.info.get("multitenant") is True and role.nro == f"E{db.info.get('idemp') or 0}-CLI"):
         raise DomainError(422, "rol_publico_no_asignable", "El rol de registro público no se puede asignar a usuarios internos")
 
 
@@ -102,12 +103,14 @@ def create_employee(db, data, settings, passwords, actor_id, peer):
         validate_role(db, data.nroRol, settings)
         validate_branch(db, data.nroSuc)
         validate_email(db, str(data.correo))
+        tenant = {"idemp": db.info["idemp"]} if db.info.get("multitenant") else {}
         user = Usuario(idusuario=str(uuid4()), tipo="E",
                        contrasena=passwords.hash(data.contrasena.get_secret_value()),
+                       **tenant,
                        **{column: getattr(data, key) for key, column in USER_FIELDS.items()})
         usuario.add(db, user)
         repository.add_employee(db, Empleado(idusuario=user.idusuario, cod_emp=repository.next_employee_code(db, lock=True),
-                                            cargo=data.cargo, nrosuc=data.nroSuc, estado="activo"))
+                                            cargo=data.cargo, nrosuc=data.nroSuc, estado="activo", **tenant))
         record(db, "usuario_creado", actor_id, peer, True)
         record(db, "empleado_creado", actor_id, peer, True)
         result = detail(db, user)

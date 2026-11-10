@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.core.database import get_platform_db
-from app.modules.plataforma_saas.dependencies import require_platform_permission
+from app.modules.saas_suscripciones.shared.dependencies import require_platform_permission
 from app.modules.saas_suscripciones.planes_funcionalidades.services import planes as service
 from app.modules.saas_suscripciones.planes_funcionalidades.schemas.planes import PlanActualizacion, PlanDatos
 

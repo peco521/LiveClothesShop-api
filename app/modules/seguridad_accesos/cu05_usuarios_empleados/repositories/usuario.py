@@ -10,8 +10,14 @@ from app.modules.seguridad_accesos.cu05_usuarios_empleados.models import Emplead
 from app.modules.seguridad_accesos.shared.repositories.organizacion import branch, branches, cities
 
 
+def _tenant_filter(db, model):
+    if db.info.get("multitenant") is True:
+        return [model.idemp == (db.info.get("idemp") or 0)]
+    return []
+
+
 def list_internal(db, *, offset, limit, q, tipo):
-    filters = [Usuario.tipo.in_(("A", "E"))]
+    filters = [Usuario.tipo.in_(("A", "E")), *_tenant_filter(db, Usuario)]
     if tipo is not None:
         filters.append(Usuario.tipo == tipo)
     if q:
@@ -24,7 +30,8 @@ def list_internal(db, *, offset, limit, q, tipo):
 
 
 def internal(db, user_id, *, lock=False):
-    query = select(Usuario).where(Usuario.idusuario == user_id, Usuario.tipo.in_(("A", "E")))
+    query = select(Usuario).where(Usuario.idusuario == user_id, Usuario.tipo.in_(("A", "E")),
+                                  *_tenant_filter(db, Usuario))
     if lock:
         query = query.with_for_update().execution_options(populate_existing=True)
     return db.scalar(query)
@@ -35,11 +42,16 @@ def profiles(db, user_id):
 
 
 def role(db, role_id):
-    return db.scalar(select(Rol).where(Rol.nro == role_id).with_for_update())
+    return db.scalar(select(Rol).where(Rol.nro == role_id, *_tenant_filter(db, Rol)).with_for_update())
 
 
 def roles(db, public_role_id):
-    return list(db.scalars(select(Rol).where(Rol.nro != public_role_id).order_by(Rol.descripcion, Rol.nro)))
+    excluded = {public_role_id}
+    if db.info.get("multitenant") is True:
+        excluded.add(f"E{db.info.get('idemp') or 0}-CLI")
+    return list(db.scalars(select(Rol).where(
+        ~Rol.nro.in_(excluded), *_tenant_filter(db, Rol)
+    ).order_by(Rol.descripcion, Rol.nro)))
 
 
 def add_employee(db, employee):
@@ -50,10 +62,11 @@ def add_employee(db, employee):
 def next_employee_code(db, *, lock=False):
     # Serialize allocation with insertion in the same PostgreSQL transaction.
     # Existing legacy codes are preserved; only Emp-<number> advances this counter.
-    if lock and is_postgresql(db):
+    if lock and is_postgresql(db) and not db.info.get("multitenant"):
         db.execute(text("LOCK TABLE empleado IN SHARE ROW EXCLUSIVE MODE"))
-    numbers = (int(match.group(1)) for code in db.scalars(select(Empleado.cod_emp))
-               if (match := re.fullmatch(r"Emp-([0-9]{1,6})", code, re.IGNORECASE)))
+    numbers = (int(match.group(1)) for code in db.scalars(
+        select(Empleado.cod_emp).where(*_tenant_filter(db, Empleado))
+    ) if (match := re.fullmatch(r"Emp-([0-9]{1,6})", code, re.IGNORECASE)))
     number = max(numbers, default=0) + 1
     if number > 999999:
         raise DomainError(409, "codigos_agotados", "No hay códigos de empleado disponibles")
