@@ -1,4 +1,3 @@
-﻿import re
 from fastapi import Request
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -8,16 +7,9 @@ class Base(DeclarativeBase):
     pass
 
 
-def _normalize_supabase_url(url: str) -> str:
-    return re.sub(
-        r"^(postgresql(?:\+\w+)?://)postgres\.([a-z0-9]+):([^@]+)@[^:/]+\.pooler\.supabase\.com(?::\d+)?/",
-        r"\1postgres:\3@db.\2.supabase.co:5432/",
-        url,
-    )
-
-
 def create_database(url: str):
-    url = _normalize_supabase_url(url)
+    # Preserve the configured endpoint, credentials, port and SSL options.
+    # Rewriting a Supabase pooler URL to the direct host breaks IPv4-only hosts.
     # Creating the engine does not connect or create tables.
     # connect_timeout evita que una peticion quede colgada si el host de la BD
     # no responde (p. ej. pooler inaccesible desde la red local).
