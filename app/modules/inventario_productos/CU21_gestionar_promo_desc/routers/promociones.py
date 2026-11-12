@@ -17,12 +17,14 @@ def promotion_list(q: str = Query('', max_length=100), offset: int = Query(0, ge
 
 @router.post('', status_code=201)
 def promotion_create(data: PromotionInput, request: Request, db=Depends(get_db), actor=Depends(a21)):
-    return promociones.save(db, data, actor[0], peer(request))
+    delivery = getattr(request.app.state, 'recovery_delivery', None)
+    return promociones.save(db, data, actor[0], peer(request), delivery=delivery)
 
 
 @router.put('/{nro}')
 def promotion_edit(nro: int, data: PromotionInput, request: Request, db=Depends(get_db), actor=Depends(a21)):
-    return promociones.save(db, data, actor[0], peer(request), nro)
+    delivery = getattr(request.app.state, 'recovery_delivery', None)
+    return promociones.save(db, data, actor[0], peer(request), nro, delivery=delivery)
 
 
 @router.post('/{nro}/desactivar')

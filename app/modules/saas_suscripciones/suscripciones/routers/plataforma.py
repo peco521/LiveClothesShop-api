@@ -85,7 +85,24 @@ def cambiar_plan(idemp: int, data: CambioPlan, request: Request,
                  identity=Depends(require_platform_permission(PLANES))):
     if data.fechaVencimiento <= data.fechaInicio:
         raise DomainError(400, "rango_invalido", "La fecha de vencimiento debe ser posterior al inicio")
-    return services.cambiar_plan(db, idemp, data, identity.usuario.idUsuario, _peer(request))
+    delivery = getattr(request.app.state, 'recovery_delivery', None)
+    return services.cambiar_plan(db, idemp, data, identity.usuario.idUsuario, _peer(request), delivery=delivery)
+
+
+@router.get("/suscripciones/vencimientos")
+def listar_vencimientos_suscripciones(db: Session = Depends(get_platform_db),
+                                     identity=Depends(require_platform_permission(PLANES))):
+    from app.modules.saas_suscripciones.suscripciones.services.renovaciones import verificar_y_notificar_vencimientos
+    return verificar_y_notificar_vencimientos(db, delivery=None, forzar=False)
+
+
+@router.post("/suscripciones/notificar-vencimientos")
+def notificar_vencimientos_suscripciones(request: Request, forzar: bool = Query(default=False),
+                                        db: Session = Depends(get_platform_db),
+                                        identity=Depends(require_platform_permission(PLANES))):
+    from app.modules.saas_suscripciones.suscripciones.services.renovaciones import verificar_y_notificar_vencimientos
+    delivery = getattr(request.app.state, 'recovery_delivery', None)
+    return verificar_y_notificar_vencimientos(db, delivery=delivery, forzar=forzar)
 
 
 @router.get("/empresas/{idemp}/uso-sucursales", response_model=UsoSucursales)

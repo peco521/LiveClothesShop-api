@@ -282,7 +282,7 @@ def cambiar_estado(db, idemp: int, estado: str, usuario: str, peer=None):
     return obtener_empresa(db, idemp)
 
 
-def cambiar_plan(db, idemp: int, data, usuario: str, peer=None):
+def cambiar_plan(db, idemp: int, data, usuario: str, peer=None, delivery=None):
     try:
         with db.begin():
             db.execute(text(
@@ -294,6 +294,14 @@ def cambiar_plan(db, idemp: int, data, usuario: str, peer=None):
             auditar(db, usuario, "empresa_plan_cambiado", {"idEmp": idemp, "idPlan": data.idPlan}, peer)
     except DBAPIError as exc:
         raise _domain_error(exc) from None
+
+    try:
+        from app.modules.saas_suscripciones.suscripciones.services.renovaciones import notificar_cambio_plan_empresa
+        notificar_cambio_plan_empresa(db, idemp, data.idPlan, data.fechaInicio, data.fechaVencimiento, delivery=delivery)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("Error al notificar cambio de plan a empresa: %s", e)
+
     return obtener_empresa(db, idemp)
 
 

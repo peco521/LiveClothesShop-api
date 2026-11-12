@@ -20,6 +20,7 @@ from app.modules.seguridad_accesos.cu07_clientes.routers.cliente import router a
 from app.modules.seguridad_accesos.cu08_bitacora.routers.bitacora import router as cu08_router
 from app.modules.seguridad_accesos.cu09_sucursales_ciudades.routers.organizacion import router as cu09_router
 from app.modules.cliente_experiencia_compra.cu10_consultar_prendas.routers.catalogo import router as cu10_router
+from app.modules.cliente_experiencia_compra.cu10_consultar_prendas.routers.notificaciones import router as notificaciones_cliente_router
 from app.modules.cliente_experiencia_compra.cu11_gestionar_reserva.routers.reserva import router as cu11_router
 from app.modules.cliente_experiencia_compra.cu11_gestionar_reserva.routers.sucursales import router as cu11_sucursales_router
 from app.modules.cliente_experiencia_compra.cu12_carrito.routers.carrito import router as cu12_router
@@ -58,7 +59,7 @@ MODULE_PREFIXES = {
     "cu07": ("/api/admin/clientes",),
     "cu08": ("/api/admin/bitacora",),
     "cu09": ("/api/admin/ciudades", "/api/admin/sucursales"),
-    "cu10": ("/api/catalogo",),
+    "cu10": ("/api/catalogo", "/api/cliente/notificaciones"),
     "cu11": ("/api/cliente/reservas", "/api/cliente/sucursales"),
     "cu12": ("/api/cliente/carrito",),
     "cu13": ("/api/cliente/compras",),
@@ -146,6 +147,22 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
                 await asyncio.sleep(60)
         # Global expiry must run under a separately authorized service identity.
         expiry_task = asyncio.create_task(expire_reservations()) if config.environment != 'test' and not config.multitenant_enabled else None
+
+        async def check_subscription_renewals():
+            from app.modules.saas_suscripciones.suscripciones.services.renovaciones import verificar_y_notificar_vencimientos
+            def run_renewals():
+                target_factory = platform_factory or factory
+                if target_factory:
+                    with target_factory() as db:
+                        verificar_y_notificar_vencimientos(db, delivery=application.state.recovery_delivery)
+            while True:
+                try:
+                    await asyncio.to_thread(run_renewals)
+                except Exception:
+                    logging.getLogger(__name__).warning('No se pudo verificar vencimientos de suscripciones SaaS')
+                await asyncio.sleep(21600)
+
+        renewal_task = asyncio.create_task(check_subscription_renewals()) if config.environment != 'test' else None
         owned_delivery = configured_gmail_delivery(config) if recovery_delivery is None else None
         application.state.recovery_delivery = recovery_delivery if recovery_delivery is not None else owned_delivery
         try:
@@ -155,6 +172,12 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
                 expiry_task.cancel()
                 try:
                     await expiry_task
+                except asyncio.CancelledError:
+                    pass
+            if renewal_task:
+                renewal_task.cancel()
+                try:
+                    await renewal_task
                 except asyncio.CancelledError:
                     pass
             if owned_delivery is not None:
@@ -266,6 +289,7 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
     application.include_router(cu08_router)
     application.include_router(cu09_router)
     application.include_router(cu10_router)
+    application.include_router(notificaciones_cliente_router)
     application.include_router(cu11_router)
     application.include_router(cu11_sucursales_router)
     application.include_router(cu12_router)

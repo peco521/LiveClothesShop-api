@@ -47,4 +47,5 @@ def plan_impact(plan_id: int, data: PlanActualizacion, db: Session = Depends(get
 @router.put('/{plan_id}')
 def update_plan(plan_id: int, data: PlanActualizacion, request: Request,
                 db: Session = Depends(get_platform_db), actor=Depends(platform_admin)):
-    return service.update(db, plan_id, data, actor.usuario.idUsuario, peer(request))
+    delivery = getattr(request.app.state, 'recovery_delivery', None)
+    return service.update(db, plan_id, data, actor.usuario.idUsuario, peer(request), delivery=delivery)

@@ -158,7 +158,7 @@ def create(db, data, user_id, peer):
     return _view(db, plan)
 
 
-def update(db, plan_id, data, user_id, peer):
+def update(db, plan_id, data, user_id, peer, delivery=None):
     with transaction(db):
         impact = preview(db, plan_id, data, lock=True)
         if data.confirmacionImpacto != impact['confirmacionImpacto']:
@@ -173,7 +173,18 @@ def update(db, plan_id, data, user_id, peer):
                {'plan': plan_id, 'anterior': previous, 'nuevo': data.model_dump(exclude={'confirmacionImpacto'}),
                 'suscripcionesActivas': impact['suscripcionesActivas'],
                 'suscripcionesAsociadas': impact['suscripcionesAsociadas']})
-    return _view(db, plan)
+        result = _view(db, plan)
+
+    try:
+        from app.modules.saas_suscripciones.suscripciones.services.renovaciones import notificar_actualizacion_plan_global
+        notificar_actualizacion_plan_global(
+            db, plan_id, data.nombre, data.maxSucursales, data.funcionalidades, delivery=delivery
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("Error al notificar actualización de plan SaaS: %s", e)
+
+    return result
 
 
 def subscription_version(db, subscription_id):

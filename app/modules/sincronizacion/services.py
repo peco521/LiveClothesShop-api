@@ -155,6 +155,10 @@ def _permiso(operacion, identity) -> ResultadoOperacion | None:
     if requerido is None:
         return _resultado(operacion, "rechazada", codigo=TIPO_NO_SOPORTADO,
                           detalle="Tipo de operación no soportado")
+    # Los clientes compran con CU13; CU24 corresponde a ventas de caja.
+    if (operacion.tipo == "venta" and identity.usuario.tipo == "C"
+            and "CU13" in identity.permisos):
+        return None
     if requerido not in identity.permisos:
         return _resultado(operacion, "rechazada", codigo=PERMISO_DENEGADO,
                           detalle=f"El rol no autoriza {operacion.tipo}")

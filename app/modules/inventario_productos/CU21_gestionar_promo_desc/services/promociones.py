@@ -23,7 +23,8 @@ def listing(db, q, offset, limit):
     return dict(items=[view(db, r) for r in rows], total=db.scalar(select_for(db, func.count()).select_from(Promocion).where(*conditions)), offset=offset, limit=limit)
 
 
-def save(db, data, actor, peer, nro=None):
+def save(db, data, actor, peer, nro=None, delivery=None):
+    is_new = nro is None
     with transaction(db):
         actor_scope(db,actor,'CU21')
         # Lock product associations before promotions to serialize competing assignments.
@@ -44,6 +45,7 @@ def save(db, data, actor, peer, nro=None):
                 # Schema has one FK/product: never overwrite another scheduled or active promotion.
                 raise DomainError(409, 'promocion_superpuesta', 'Una prenda ya tiene otra promoción activa o programada')
         if row is None:
+            is_new = True
             if tenant_id(db) is not None and db.get_bind().dialect.name=='postgresql':
                 row=create_identified(db,Promocion,dict(estado='activo',nombre=data.nombre,descripcion=data.descripcion,
                     tipodescuento=data.tipoDescuento,valordescuento=data.valorDescuento,fechaini=data.fechaIni,fechafin=data.fechaFin))
@@ -61,7 +63,22 @@ def save(db, data, actor, peer, nro=None):
                 p.idpromo = None
         db.flush()
         record(db, 'promocion_guardada', actor, peer, True)
-        return view(db, row)
+        result = view(db, row)
+
+    tenant = tenant_id(db)
+    if tenant is not None:
+        try:
+            from app.core.notifications import notify_promotion_launched
+            notify_promotion_launched(
+                db, tenant, result['idPromo'], data.nombre, data.descripcion,
+                data.tipoDescuento, data.valorDescuento, data.fechaIni, data.fechaFin,
+                data.productos, delivery=delivery
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("No se pudo emitir notificación de promoción: %s", exc)
+
+    return result
 
 
 def deactivate(db, nro, actor, peer):

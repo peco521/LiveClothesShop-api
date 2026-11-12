@@ -44,6 +44,20 @@ class GmailRecoveryDelivery:
             except Full:
                 raise RuntimeError("Servicio de recuperación no disponible") from None
 
+    def dispatch_email(self, recipient: str | None, subject: str, body: str) -> bool:
+        if not recipient:
+            return False
+        with self._lock:
+            if self._closed.is_set() or self._failed.is_set():
+                logging.getLogger(__name__).warning("Servicio de correo no disponible para enviar a %s", recipient)
+                return False
+            try:
+                self._queue.put_nowait(("email", recipient, subject, body))
+                return True
+            except Full:
+                logging.getLogger(__name__).warning("Cola de correo llena, mensaje descartado para %s", recipient)
+                return False
+
     def close(self):
         with self._lock:
             self._closed.set()
@@ -56,10 +70,15 @@ class GmailRecoveryDelivery:
             except Empty:
                 continue
             try:
-                recipient, token, expires = job
-                if (not self._failed.is_set() and not self._closed.is_set()
-                        and recipient is not None and expires > datetime.now(timezone.utc)):
-                    self._send(recipient, token, expires)
+                if len(job) == 3:
+                    recipient, token, expires = job
+                    if (not self._failed.is_set() and not self._closed.is_set()
+                            and recipient is not None and expires > datetime.now(timezone.utc)):
+                        self._send(recipient, token, expires)
+                elif len(job) == 4 and job[0] == "email":
+                    _, recipient, subject, body = job
+                    if not self._failed.is_set() and not self._closed.is_set() and recipient:
+                        self._send_generic(recipient, subject, body)
             except Exception:
                 self._failed.set()
                 # Never log the exception: provider responses can carry secrets.
@@ -68,7 +87,6 @@ class GmailRecoveryDelivery:
             finally:
                 self._queue.task_done()
                 del job
-                recipient = token = expires = None
         # Discard plaintext jobs on shutdown; never persist or retry them.
         while True:
             try:
@@ -101,6 +119,20 @@ class GmailRecoveryDelivery:
             "\n\nEl enlace es de un solo uso y vence a las " +
             expires.astimezone(timezone.utc).strftime("%H:%M UTC") +
             ".\nSi no lo solicitaste, ignora este correo. No compartas el enlace.\n")
+        raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
+        if not self._closed.is_set():
+            self._post("https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+                       json.dumps({"raw": raw}).encode(), "application/json", access)
+
+    def _send_generic(self, recipient: str, subject: str, body: str):
+        access = self._post("https://oauth2.googleapis.com/token",
+                            urlencode(self._credentials).encode(),
+                            "application/x-www-form-urlencoded")["access_token"]
+        message = EmailMessage()
+        message["From"] = self._sender
+        message["To"] = recipient
+        message["Subject"] = subject
+        message.set_content(body)
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
         if not self._closed.is_set():
             self._post("https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
