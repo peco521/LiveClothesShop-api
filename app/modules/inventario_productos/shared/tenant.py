@@ -7,9 +7,10 @@ from app.core.errors import DomainError
 
 
 def tenant_id(db):
-    if db.info.get('multitenant') is not True:
+    info = getattr(db, 'info', None)
+    if not isinstance(info, dict) or info.get('multitenant') is not True:
         return None
-    tenant = db.info.get('idemp')
+    tenant = info.get('idemp')
     if not isinstance(tenant, int) or tenant <= 0:
         raise DomainError(403, 'empresa_requerida', 'La sesión requiere una empresa válida')
     return tenant

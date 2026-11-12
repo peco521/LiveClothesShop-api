@@ -72,8 +72,10 @@ SALES = """FROM venta v JOIN detalleventa d ON d.idemp=v.idemp AND d.nroventa=v.
       AND EXISTS (SELECT 1 FROM pago pg WHERE pg.idemp=v.idemp AND pg.nroventa=v.nroventa AND pg.estado='aprobado')"""
 AMOUNT = 'sum((d.preciounitario-coalesce(d.descuentounitario,0))*d.cantidad)'
 
-def calculate(db, plan: ReportPlan, actor, zone='America/La_Paz'):
-    feature(db)
+def calculate(db, plan: ReportPlan, actor, zone='America/La_Paz', *, check_feature=True,
+              audit=True, source_label=None, keep_snapshot=True):
+    if check_feature:
+        feature(db)
     branch = _scope(db, plan, actor)
     params = {'tenant': tenant(db), 'branch': branch, 'limit': plan.limite, 'threshold': plan.umbral, 'zone': zone}
     if plan.fechaIni:
@@ -106,11 +108,14 @@ def calculate(db, plan: ReportPlan, actor, zone='America/La_Paz'):
             if isinstance(value, Decimal): row[key] = str(value.quantize(Decimal('0.01')))
     result = {'titulo': TITLES[plan.tipo], 'plan': plan.model_dump(mode='json'), 'agrupacion': GROUPS[plan.tipo],
               'columnas': columns, 'filas': rows, 'generadoEn': datetime.now(timezone.utc).isoformat(),
-              'procedencia': 'PostgreSQL: datos comerciales reales de la empresa autenticada',
+              'procedencia': source_label or 'PostgreSQL: datos comerciales reales de la empresa autenticada',
               'nota': 'Inventario conocido al consultar; el período no filtra existencias.' if plan.tipo=='existencias_bajas' else 'Ventas registradas con pago aprobado; importes de líneas netos de descuento. Fechas de negocio: '+zone}
-    bitacora.add(db, action='reporte_dinamico_consultado', user_id=actor[0], ip=None,
-                 details={'resultado':'exito','tipo':plan.tipo,'filas':len(rows)})
-    db.commit()
+    if audit:
+        bitacora.add(db, action='reporte_dinamico_consultado', user_id=actor[0], ip=None,
+                     details={'resultado':'exito','tipo':plan.tipo,'filas':len(rows)})
+        db.commit()
+    if not keep_snapshot:
+        return result
     token = str(uuid4())
     with _lock:
         _prune()

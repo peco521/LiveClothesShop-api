@@ -146,7 +146,5 @@ class Inventario(TenantCatalog, Base):
     nroinv: Mapped[int] = mapped_column(Integer, primary_key=True)
     stock: Mapped[int] = mapped_column(Integer)
     cantdisp: Mapped[int] = mapped_column(Integer)
-    stockdanado: Mapped[int] = deferred(
-        mapped_column(Integer, nullable=False, server_default="0"))
     nrosuc: Mapped[int] = mapped_column(ForeignKey("sucursal.nro", onupdate="CASCADE", ondelete="CASCADE"))
     idvar: Mapped[str] = mapped_column(ForeignKey("varianteprod.idvariante", onupdate="CASCADE", ondelete="CASCADE"))

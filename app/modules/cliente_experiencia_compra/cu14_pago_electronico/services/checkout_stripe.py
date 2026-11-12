@@ -3,6 +3,8 @@
 No remote Stripe request runs under a DB transaction. Webhooks and explicit
 reconciliation are idempotent. No browser-supplied success authorizes stock.
 """
+from decimal import Decimal
+
 from app.core.errors import DomainError
 from app.integrations.payments.modos import es_sesion_de_pasarela, livemode_esperado, modo_de_adaptador
 from app.modules.cliente_experiencia_compra.cu12_carrito.repositories import carrito as carts
@@ -10,6 +12,21 @@ from app.modules.cliente_experiencia_compra.cu14_pago_electronico.repositories i
 from app.modules.cliente_experiencia_compra.cu14_pago_electronico.services import pago as core
 from app.modules.cliente_experiencia_compra.shared.models.comercio import Pago
 from app.modules.seguridad_accesos.services.bitacora import record
+
+
+def _monto_bajo_minimo_stripe(monto, currency):
+    return currency.lower() == "usd" and monto < Decimal("0.50")
+
+
+def _validar_monto_stripe(monto, currency):
+    """Evita crear sesiones que Stripe rechazará por estar bajo su mínimo."""
+    # Stripe establece un mínimo de USD 0,50 para pagos con tarjeta.
+    if _monto_bajo_minimo_stripe(monto, currency):
+        raise DomainError(
+            422,
+            "monto_minimo_stripe",
+            "La compra mínima de Stripe es USD 0,50. Cancela esta compra, actualiza el precio del producto y vuelve a agregarlo al carrito.",
+        )
 
 
 def _livemode_esperado(stripe) -> bool:
@@ -67,6 +84,7 @@ def start(db, data, user_id, peer, stripe):
             raise DomainError(404, "venta_no_encontrada", "Venta no encontrada")
         if venta.estado != "registrada":
             raise DomainError(409, "venta_no_pagable", "La venta ya no puede pagarse")
+        _validar_monto_stripe(venta.total, stripe.currency)
         previos = repo.pagos_de_venta(db, venta.nroventa)
         pago = next((p for p in previos if p.estado in {"pendiente", "aprobado"}), None)
         created = pago is None
@@ -104,6 +122,7 @@ def reconcile(db, id_pago, user_id, peer, stripe):
         if pago.estado != "pendiente":
             return core._vista(db, pago)
         reference, amount, nro = pago.referencia, pago.monto, venta.nroventa
+        _validar_monto_stripe(amount, stripe.currency)
     if reference == "stripe:creating":
         success_url, cancel_url = _retorno(venta, id_pago, stripe)
         session = stripe.create(id_pago, nro, amount, success_url=success_url, cancel_url=cancel_url)
@@ -213,6 +232,13 @@ def cancel_sale(db, nro, user_id, peer, stripe=None):
         snapshot = (pending.idpago, pending.monto, pending.referencia) if pending else None
     if stripe and snapshot:
         id_pago, amount, reference = snapshot
+        if reference == "stripe:creating" and _monto_bajo_minimo_stripe(amount, stripe.currency):
+            # Stripe no puede tener una sesión para este importe mínimo rechazado;
+            # deja que el cliente cancele el intento antiguo sin reintentar el cobro.
+            with core.transaction(db):
+                pago, venta = _locked(db, id_pago, user_id)
+                if pago.estado == "pendiente" and pago.referencia == "stripe:creating":
+                    return _reject(db, pago, venta, user_id, peer)
         if reference == "stripe:creating":
             success_url, cancel_url = _retorno(venta, id_pago, stripe)
             session = stripe.create(id_pago, nro, amount, success_url=success_url, cancel_url=cancel_url)

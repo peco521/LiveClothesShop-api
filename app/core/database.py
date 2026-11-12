@@ -7,12 +7,23 @@ class Base(DeclarativeBase):
     pass
 
 
+def _normalize_supabase_url(url: str) -> str:
+    # Supabase direct host db.<ref>.supabase.co is IPv6-only. On IPv4-only hosting (such as Render),
+    # this causes connection timeouts (503 servicio_no_disponible). Automatically rewrite to IPv4 pooler.
+    if "db.vleqtsrmaqvslyugurzj.supabase.co" in url:
+        url = url.replace("db.vleqtsrmaqvslyugurzj.supabase.co", "aws-0-us-west-2.pooler.supabase.com")
+        if "postgres:" in url and "postgres.vleqtsrmaqvslyugurzj:" not in url:
+            url = url.replace("postgres:", "postgres.vleqtsrmaqvslyugurzj:", 1)
+    return url
+
+
 def create_database(url: str):
     # Preserve the configured endpoint, credentials, port and SSL options.
     # Rewriting a Supabase pooler URL to the direct host breaks IPv4-only hosts.
     # Creating the engine does not connect or create tables.
     # connect_timeout evita que una peticion quede colgada si el host de la BD
     # no responde (p. ej. pooler inaccesible desde la red local).
+    url = _normalize_supabase_url(url)
     connect_args = {"connect_timeout": 5} if url.startswith("postgresql") else {}
     engine = create_engine(url, pool_pre_ping=True, echo=False, hide_parameters=True,
                            connect_args=connect_args)

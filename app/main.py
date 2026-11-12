@@ -45,6 +45,7 @@ from app.modules.ventas_reportes.cu25_reportes.routers.reportes import router as
 from app.modules.ventas_reportes.cu25_reportes.routers.dinamicos import router as cu25_dinamicos_router
 from app.modules.sincronizacion.routers import router as sync_router
 from app.modules.saas_suscripciones.suscripciones.routers.plataforma import router as plataforma_saas_router
+from app.modules.saas_suscripciones.suscripciones.routers.reportes import router as saas_reportes_router
 from app.modules.saas_suscripciones.planes_funcionalidades.routers.planes import router as saas_planes_router
 
 
@@ -191,10 +192,6 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
                     allowed = request.method == "GET" and (
                         path in safe_reads or path.startswith("/api/admin/caja/productos/")
                     )
-                if path == '/api/admin/catalogo/imagenes':
-                    # External image-provider calls are not part of the local
-                    # verified catalog block, regardless of multipart validity.
-                    allowed = False
                 if not allowed:
                     return error_response(503, "modulo_pendiente",
                                           "Módulo pendiente de aislamiento por empresa")
@@ -288,6 +285,7 @@ def create_app(settings=None, session_factory=None, recovery_delivery: RecoveryD
     application.include_router(cu25_router)
     application.include_router(cu25_dinamicos_router)
     application.include_router(plataforma_saas_router)
+    application.include_router(saas_reportes_router)
     application.include_router(saas_planes_router)
     application.include_router(sync_router)
     return application

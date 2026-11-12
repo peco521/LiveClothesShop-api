@@ -14,8 +14,8 @@ from app.modules.cliente_experiencia_compra.cu14_pago_electronico.services impor
 
 def sandbox_only(request:Request):
     settings=request.app.state.settings
-    if settings.multitenant_enabled and (settings.payments_provider!='mock' or settings.environment=='production'):
-        raise DomainError(503,'pago_proveedor_no_verificado','Solo está verificado el sandbox académico sin cargos reales')
+    if settings.environment == 'production' and settings.payments_provider != 'stripe':
+        raise DomainError(503, 'pasarela_no_disponible', 'Configure Stripe para aceptar pagos en producción')
 
 
 router = APIRouter(prefix="/api/cliente/pagos", tags=["Pago electrónico"],

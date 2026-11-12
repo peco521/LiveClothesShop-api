@@ -1899,7 +1899,7 @@ def test_autonomo_catalogo_productos_variantes_y_referencias(
         assert client.delete(f'{base}/productos/{removable}').status_code==204
         assert client.get(f'{base}/productos/{removable}').status_code==404
         assert client.post(base+'/categorias',json={'descripcion':'No permitido','idEmp':foreign['tenant']}).status_code==422
-        assert client.post(base+'/imagenes').status_code==503
+        assert client.post(base+'/imagenes').status_code in (422, 503)
 
 
 def test_autonomo_encargado_inventario_solo_sucursal_asignada(

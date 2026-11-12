@@ -1,8 +1,8 @@
 """Consultas de carrito (CU12). Solo el carrito ACTIVO del propietario."""
 
-from sqlalchemy import func, select, text
+from sqlalchemy import exists, func, select, text, update
 
-from app.modules.cliente_experiencia_compra.shared.models.comercio import Carrito, DetalleCarro
+from app.modules.cliente_experiencia_compra.shared.models.comercio import Carrito, DetalleCarro, Pago, Venta
 from app.modules.seguridad_accesos.models import Cliente
 from app.modules.cliente_experiencia_compra.shared.repositories.tenant import scoped
 
@@ -15,17 +15,36 @@ def locked_cliente(db, user_id: str):
     """Fila estable del cliente para serializar la creación del carrito activo."""
     query = (select(Cliente).where(Cliente.idusuario == user_id)
              .with_for_update().execution_options(populate_existing=True))
-    return db.scalar(_scoped(db, query))
+    cliente = db.scalar(_scoped(db, query))
+    if cliente is not None:
+        # Vacía carritos sin actividad durante 2 h. Conserva los que tengan un
+        # cobro pendiente para que el webhook/reconciliación pueda finalizarlo.
+        pago_pendiente = exists(select(1).select_from(Venta).join(
+            Pago, Pago.nroventa == Venta.nroventa).where(
+                Venta.idcarrito == Carrito.idcarrito,
+                Venta.idusuariocl == user_id,
+                Venta.estado == 'registrada',
+                Pago.estado == 'pendiente'))
+        stmt = update(Carrito).where(
+            Carrito.idusuariocl == user_id,
+            Carrito.estado == 'activo',
+            Carrito.fechahora <= func.now() - text("interval '2 hours'"),
+            ~pago_pendiente,
+        ).values(estado='abandonado')
+        db.execute(_scoped(db, stmt))
+    return cliente
 
 
 def active_cart(db, user_id: str):
     return db.scalar(_scoped(db, select(Carrito).where(Carrito.idusuariocl == user_id,
-                                           Carrito.estado == "activo")))
+                                           Carrito.estado == "activo",
+                                           Carrito.fechahora > func.now() - text("interval '2 hours'"))))
 
 
 def locked_active_cart(db, user_id: str):
     query = (select(Carrito).where(Carrito.idusuariocl == user_id,
-                                   Carrito.estado == "activo")
+                                   Carrito.estado == "activo",
+                                   Carrito.fechahora > func.now() - text("interval '2 hours'"))
              .with_for_update().execution_options(populate_existing=True))
     return db.scalar(_scoped(db, query))
 

@@ -84,6 +84,18 @@ class Settings(BaseSettings):
         "http://localhost:4200", "http://localhost:4300",
     ])
 
+    @model_validator(mode="before")
+    @classmethod
+    def parse_allowed_origins(cls, data):
+        if not isinstance(data, dict):
+            return data
+        origins = data.get("allowed_origins")
+        if isinstance(origins, str):
+            data["allowed_origins"] = [o.strip().rstrip("/") for o in origins.split(",") if o.strip()]
+        elif isinstance(origins, list):
+            data["allowed_origins"] = [o.strip().rstrip("/") if isinstance(o, str) else o for o in origins]
+        return data
+
     @model_validator(mode="after")
     def validate_security(self):
         if self.platform_use_database_url and self.environment != "development":
