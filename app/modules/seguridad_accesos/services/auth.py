@@ -40,6 +40,39 @@ def _resolve_empresa(db, codigo: str) -> int | None:
     )
 
 
+def resolver_idemp_empresa(db, settings, codigo_empresa) -> int | None:
+    """Resuelve el código de empresa a idEmp del tenant para alta pública.
+
+    En producción (PostgreSQL) consulta auth_resolver_empresa o la consulta de
+    respaldo; en otros motores no hay resolución de tenant real, por lo que se
+    rechaza el registro (las pruebas dirigidas lo monkeypatchean).
+    """
+    codigo = str(codigo_empresa or "").strip().lower()
+    if not codigo:
+        raise DomainError(422, "empresa_requerida",
+                          "Se requiere el código de empresa para el registro público")
+    if not is_postgresql(db):
+        raise DomainError(503, "registro_no_disponible", "El registro no está disponible")
+    has_fn = db.scalar(
+        text("SELECT to_regprocedure('public.auth_resolver_empresa(character varying)') IS NOT NULL"))
+    if has_fn:
+        resultado = db.scalar(text("SELECT auth_resolver_empresa(:codigo)"), {"codigo": codigo})
+    else:
+        resultado = db.scalar(
+            text("""
+                SELECT e.idemp FROM public.empresa e
+                WHERE e.codigo = :codigo AND e.estado = 'activa'
+                  AND EXISTS (SELECT 1 FROM public.suscripcion s
+                              WHERE s.idemp = e.idemp AND s.estado = 'activa'
+                                AND CURRENT_DATE BETWEEN s.fechainicio AND s.fechavencimiento)"""),
+            {"codigo": codigo},
+        )
+    if resultado is None:
+        raise DomainError(403, "empresa_no_elegible",
+                          "La empresa no está disponible para el registro público")
+    return int(resultado)
+
+
 def list_login_companies(db) -> list[dict[str, str]]:
     if not is_postgresql(db):
         return []
@@ -82,16 +115,8 @@ def register(db, data, settings, passwords, peer, access_tokens):
             idemp = None
             role_id = settings.cliente_rol_id
             if settings.multitenant_enabled:
-                if not is_postgresql(db):
-                    raise DomainError(503, "registro_no_disponible", "El registro no está disponible")
                 codigo_emp = data.empresa
-                if not codigo_emp:
-                    companies = list_login_companies(db)
-                    if len(companies) == 1:
-                        codigo_emp = companies[0]["codigo"]
-                    else:
-                        raise DomainError(422, "empresa_requerida", "Selecciona la empresa en la que deseas registrarte")
-                idemp = _resolve_empresa(db, codigo_emp)
+                idemp = resolver_idemp_empresa(db, settings, codigo_emp)
                 if idemp is None:
                     raise DomainError(503, "registro_no_disponible", "La empresa seleccionada no está disponible")
                 tenant_context(db, idemp)
@@ -196,7 +221,7 @@ def login(db, data, settings, passwords, peer, access_tokens, *, allowed_types=N
                 if migrate:
                     encoded = passwords.hash(password)
                     if is_postgresql(db):
-                        usuario.cambiar_contrasena(db, user.correo, encoded)
+                        usuario.cambiar_contrasena_propio(db, user.idusuario, encoded)
                         db.refresh(user, ["contrasena"])
                         if user.contrasena != encoded:
                             raise authentication_failed()
@@ -353,17 +378,26 @@ def logout(db, credential, peer, access_tokens):
     access_tokens.revoke(credential)
 
 
-def request_recovery(db, data, delivery, peer):
+def request_recovery(db, data, settings, delivery, peer):
     unavailable = DomainError(503, "recuperacion_no_disponible", "La recuperación de contraseña no está disponible")
     started = monotonic()
     token = new_credential()
     token_digest = digest(token)
     try:
         with db.begin():
+            if settings.multitenant_enabled:
+                if not data.empresa:
+                    raise DomainError(422, "empresa_requerida",
+                                      "Se requiere el código de empresa para la recuperación")
+                idemp = resolver_idemp_empresa(db, settings, data.empresa)
+                tenant_context(db, idemp)
+                db.info["empresa"] = data.empresa
             if delivery is None:
                 record(db, "recuperacion_solicitada", None, peer, False)
             else:
                 _issue_recovery(db, data, delivery, peer, token, token_digest)
+    except DomainError:
+        raise
     except Exception:
         # Neither adapter diagnostics nor SQL parameters may escape.
         raise unavailable from None
@@ -394,16 +428,39 @@ def reset_password(db, data, passwords, peer):
     rejected = DomainError(400, "recuperacion_invalida", "El enlace no es válido o ha expirado")
     encoded = passwords.hash(data.nueva_contrasena.get_secret_value())
     with db.begin():
-        token = recovery.by_digest(db, digest(data.token.get_secret_value()))
+        token_digest = digest(data.token.get_secret_value())
+        usuario_id_token = None
+        if is_postgresql(db):
+            # En PostgreSQL con RLS, localizar el tenant del token mediante la
+            # función SECURITY DEFINER antes de establecer el contexto de
+            # tenant. La función lee recuperacion_contrasena a pesar de RLS y
+            # retorna solo (idemp, usuario_id), nunca el resumen del token, por
+            # lo que no filtra información de otros tenants.
+            owner = recovery.token_owner_by_digest(db, token_digest)
+            if owner is None:
+                raise rejected
+            idemp, usuario_id_token = owner
+            tenant_context(db, idemp)
+        token = recovery.by_digest(db, token_digest)
         if token is None:
+            raise rejected
+        # Defensa en profundidad: en PostgreSQL, el usuario del token debe
+        # coincidir con el resuelto por la función SECURITY DEFINER.
+        if usuario_id_token is not None and str(token.usuario_id) != str(usuario_id_token):
             raise rejected
         # Same lock order as issuance and login. Conditional consume rechecks after waiting.
         user = usuario.locked(db, token.usuario_id)
         now = utcnow()
         if user is None or not recovery.consume(db, token.id, now):
             raise rejected
+        # Establecer el contexto de tenant del propietario del token para la
+        # escritura de auditoría (bitacora.idemp). En PostgreSQL ya se fijó
+        # desde la función SECURITY DEFINER; en otros motores solo se registra
+        # en db.info sin ejecutar SQL.
+        if user.idemp is not None:
+            tenant_context(db, user.idemp)
         if is_postgresql(db):
-            usuario.cambiar_contrasena(db, user.correo, encoded)
+            usuario.cambiar_contrasena_propio(db, token.usuario_id, encoded)
             db.expire(user, ["contrasena"])
         else:
             user.contrasena = encoded

@@ -21,3 +21,4 @@ class RecuperacionContrasena(Base):
     creada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expira_en: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     utilizada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    idemp: Mapped[int | None] = mapped_column(Integer, nullable=True)

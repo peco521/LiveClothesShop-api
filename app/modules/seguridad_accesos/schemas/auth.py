@@ -60,6 +60,7 @@ class LoginPlataforma(PublicInput):
 
 
 class RecuperarContrasena(PublicInput):
+    empresa: Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z0-9-]{1,30}$")] | None = None
     correo: EmailStr = Field(max_length=100)
     _correo = field_validator("correo", mode="before")(normalize_email)
 

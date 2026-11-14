@@ -51,10 +51,25 @@ def registrar_cliente(db, *, user_id, ci, nombre, apellido_pat, apellido_mat,
     db.execute(text(procedure), parameters)
 
 
-def cambiar_contrasena(db, correo: str, password_hash: str):
-    db.execute(text("CALL sp_cambiar_contrasena(:correo, :password_hash)"), {
-        "correo": correo, "password_hash": password_hash,
-    })
+def cambiar_contrasena_propio(db, idusuario: str, password_hash: str):
+    """
+    Cambia la contraseña del usuario autenticado (self-service).
+
+    Usa UPDATE directo con filtro por idusuario e idemp (RLS) en lugar de
+    sp_cambiar_contrasena, que carece de control de autorización a nivel de
+    usuario y tiene EXECUTE concedido a PUBLIC.
+
+    El parámetro idusuario proviene de la sesión autenticada, nunca del cliente.
+    """
+    db.execute(
+        text("""
+            UPDATE usuario
+            SET contrasena = :hash
+            WHERE idusuario = :idusuario
+              AND idemp = fn_idemp_actual()
+        """),
+        {"hash": password_hash, "idusuario": idusuario},
+    )
 
 
 def create_client(db, *, user_id, data, password_hash, role_id, client_code, idemp: int | None = None):
