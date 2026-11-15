@@ -1,98 +1,203 @@
 -- ============================================================================
 -- Script: 00_restringir_execute_sp_cambiar_contrasena.sql
--- Descripción: Restringe el acceso a sp_cambiar_contrasena para evitar que
---              usuarios no autorizados cambien contraseñas directamente.
+-- Descripción: Restringe EXECUTE sobre sp_cambiar_contrasena al rol de
+--              aprovisionamiento autorizado.
 --
--- Propósito: Eliminar EXECUTE de PUBLIC y otros roles no autorizados,
---              manteniendo el acceso solo para roles de administración autorizados.
+-- Ejecutar SOLO después de desplegar y verificar el código que usa
+-- cambiar_contrasena_propio() para login y recuperación. Ejecutar como el
+-- propietario del procedimiento o un rol con privilegios equivalentes.
 --
--- Uso: Ejecutar como superusuario (postgres) en la base de producción.
---
--- ADVERTENCIA: Ejecutar SOLO después de desplegar el nuevo código en
--- Render, ya que el backend ya no usa este procedimiento.
+-- Seguridad operacional:
+--   * La operación completa es una única transacción.
+--   * Una precondición o verificación posterior fallida aborta la transacción.
+--   * No se restauran ni se conceden permisos a PUBLIC.
 -- ============================================================================
 
--- ------------------------------------------------------------
--- PASO 1: Verificar estado actual (solo lectura)
--- ------------------------------------------------------------
-SELECT 'ANTES - Permisos de sp_cambiar_contrasena:' AS info;
-SELECT grantee, privilege_type
-FROM information_schema.role_routine_grants
-WHERE routine_name = 'sp_cambiar_contrasena'
-ORDER BY grantee;
+BEGIN;
 
--- ------------------------------------------------------------
--- PASO 2: Revocar EXECUTE de roles que no deben tener acceso directo
--- ------------------------------------------------------------
+-- Firma exacta del objeto que se va a proteger. No continuar con una función
+-- homónima, una sobrecarga distinta ni un objeto que no sea PROCEDURE.
 DO $$
+DECLARE
+    v_procedimiento oid := to_regprocedure(
+        'public.sp_cambiar_contrasena(integer,character varying,character varying)'
+    );
+    v_rol text;
 BEGIN
-    REVOKE EXECUTE ON PROCEDURE public.sp_cambiar_contrasena(integer, character varying, character varying) FROM PUBLIC;
-EXCEPTION WHEN others THEN
-    RAISE NOTICE 'No se pudo revocar de PUBLIC: %', SQLERRM;
+    IF v_procedimiento IS NULL THEN
+        RAISE EXCEPTION
+            'No existe public.sp_cambiar_contrasena(integer, character varying, character varying)';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_proc
+        WHERE oid = v_procedimiento
+          AND prokind = 'p'
+    ) THEN
+        RAISE EXCEPTION
+            'El objeto % existe pero no es un PROCEDURE', v_procedimiento::regprocedure;
+    END IF;
+
+    FOREACH v_rol IN ARRAY ARRAY[
+        'anon',
+        'authenticated',
+        'service_role',
+        'fashionstore_app',
+        'fashionstore_provisioner'
+    ]
+    LOOP
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_rol) THEN
+            RAISE EXCEPTION 'No existe el rol requerido: %', v_rol;
+        END IF;
+    END LOOP;
 END $$;
 
-DO $$
-BEGIN
-    REVOKE EXECUTE ON PROCEDURE public.sp_cambiar_contrasena(integer, character varying, character varying) FROM anon;
-EXCEPTION WHEN others THEN
-    RAISE NOTICE 'No se pudo revocar de anon: %', SQLERRM;
-END $$;
+-- Estado previo: ACL directa (incluye PUBLIC si aparece como grantee).
+SELECT
+    'ANTES_ACL_DIRECTA' AS verificacion,
+    COALESCE(grantee.rolname, 'PUBLIC') AS grantee,
+    acl.privilege_type,
+    acl.is_grantable
+FROM pg_proc AS procedimiento
+CROSS JOIN LATERAL aclexplode(
+    COALESCE(procedimiento.proacl, acldefault('f', procedimiento.proowner))
+) AS acl
+LEFT JOIN pg_roles AS grantee ON grantee.oid = acl.grantee
+WHERE procedimiento.oid = to_regprocedure(
+    'public.sp_cambiar_contrasena(integer,character varying,character varying)'
+)
+ORDER BY grantee, acl.privilege_type;
+
+-- Estado previo: privilegios efectivos. has_function_privilege incorpora
+-- PUBLIC y membresías heredables, no solo la ACL asignada directamente.
+WITH roles_implicados(rolname) AS (
+    VALUES ('anon'), ('authenticated'), ('service_role'),
+           ('fashionstore_app'), ('fashionstore_provisioner')
+)
+SELECT
+    'ANTES_EFECTIVO' AS verificacion,
+    roles_implicados.rolname,
+    roles.rolinherit,
+    has_function_privilege(
+        roles_implicados.rolname,
+        to_regprocedure('public.sp_cambiar_contrasena(integer,character varying,character varying)'),
+        'EXECUTE'
+    ) AS puede_ejecutar
+FROM roles_implicados
+JOIN pg_roles AS roles USING (rolname)
+ORDER BY roles_implicados.rolname;
+
+-- Membresías que podrían explicar privilegios heredados en los roles revisados.
+WITH roles_implicados(rolname) AS (
+    VALUES ('anon'), ('authenticated'), ('service_role'),
+           ('fashionstore_app'), ('fashionstore_provisioner')
+)
+SELECT
+    'MEMBRESIA' AS verificacion,
+    miembro.rolname AS miembro,
+    padre.rolname AS miembro_de,
+    membresia.admin_option
+FROM pg_auth_members AS membresia
+JOIN pg_roles AS miembro ON miembro.oid = membresia.member
+JOIN pg_roles AS padre ON padre.oid = membresia.roleid
+JOIN roles_implicados ON roles_implicados.rolname = miembro.rolname
+ORDER BY miembro, miembro_de;
+
+-- Revocación explícita. No se silencian errores: cualquier fallo aborta la
+-- transacción completa y evita un estado parcial.
+REVOKE EXECUTE ON PROCEDURE public.sp_cambiar_contrasena(
+    integer, character varying, character varying
+) FROM PUBLIC, anon, authenticated, service_role, fashionstore_app;
+
+-- El rol de aprovisionamiento es el único rol previsto que conserva acceso.
+GRANT EXECUTE ON PROCEDURE public.sp_cambiar_contrasena(
+    integer, character varying, character varying
+) TO fashionstore_provisioner;
+
+-- Estado posterior: ACL directa.
+SELECT
+    'DESPUES_ACL_DIRECTA' AS verificacion,
+    COALESCE(grantee.rolname, 'PUBLIC') AS grantee,
+    acl.privilege_type,
+    acl.is_grantable
+FROM pg_proc AS procedimiento
+CROSS JOIN LATERAL aclexplode(
+    COALESCE(procedimiento.proacl, acldefault('f', procedimiento.proowner))
+) AS acl
+LEFT JOIN pg_roles AS grantee ON grantee.oid = acl.grantee
+WHERE procedimiento.oid = to_regprocedure(
+    'public.sp_cambiar_contrasena(integer,character varying,character varying)'
+)
+ORDER BY grantee, acl.privilege_type;
+
+-- Estado posterior: privilegios efectivos, incluido acceso obtenido mediante
+-- una membresía de rol. Debe fallar antes de COMMIT ante cualquier acceso no
+-- autorizado o ante la pérdida de acceso de fashionstore_provisioner.
+WITH roles_implicados(rolname) AS (
+    VALUES ('anon'), ('authenticated'), ('service_role'),
+           ('fashionstore_app'), ('fashionstore_provisioner')
+)
+SELECT
+    'DESPUES_EFECTIVO' AS verificacion,
+    roles_implicados.rolname,
+    roles.rolinherit,
+    has_function_privilege(
+        roles_implicados.rolname,
+        to_regprocedure('public.sp_cambiar_contrasena(integer,character varying,character varying)'),
+        'EXECUTE'
+    ) AS puede_ejecutar
+FROM roles_implicados
+JOIN pg_roles AS roles USING (rolname)
+ORDER BY roles_implicados.rolname;
 
 DO $$
+DECLARE
+    v_procedimiento oid := to_regprocedure(
+        'public.sp_cambiar_contrasena(integer,character varying,character varying)'
+    );
+    v_rol text;
 BEGIN
-    REVOKE EXECUTE ON PROCEDURE public.sp_cambiar_contrasena(integer, character varying, character varying) FROM authenticated;
-EXCEPTION WHEN others THEN
-    RAISE NOTICE 'No se pudo revocar de authenticated: %', SQLERRM;
+    FOREACH v_rol IN ARRAY ARRAY[
+        'anon', 'authenticated', 'service_role', 'fashionstore_app'
+    ]
+    LOOP
+        IF has_function_privilege(v_rol, v_procedimiento, 'EXECUTE') THEN
+            RAISE EXCEPTION
+                'Verificación fallida: % conserva EXECUTE efectivo sobre %',
+                v_rol, v_procedimiento::regprocedure;
+        END IF;
+    END LOOP;
+
+    IF NOT has_function_privilege(
+        'fashionstore_provisioner', v_procedimiento, 'EXECUTE'
+    ) THEN
+        RAISE EXCEPTION
+            'Verificación fallida: fashionstore_provisioner no conserva EXECUTE sobre %',
+            v_procedimiento::regprocedure;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_proc AS procedimiento
+        CROSS JOIN LATERAL aclexplode(
+            COALESCE(procedimiento.proacl, acldefault('f', procedimiento.proowner))
+        ) AS acl
+        WHERE procedimiento.oid = v_procedimiento
+          AND acl.grantee = 0
+          AND acl.privilege_type = 'EXECUTE'
+    ) THEN
+        RAISE EXCEPTION
+            'Verificación fallida: PUBLIC conserva EXECUTE directo sobre %',
+            v_procedimiento::regprocedure;
+    END IF;
 END $$;
 
-DO $$
-BEGIN
-    REVOKE EXECUTE ON PROCEDURE public.sp_cambiar_contrasena(integer, character varying, character varying) FROM service_role;
-EXCEPTION WHEN others THEN
-    RAISE NOTICE 'No se pudo revocar de service_role: %', SQLERRM;
-END $$;
+COMMIT;
 
-DO $$
-BEGIN
-    REVOKE EXECUTE ON PROCEDURE public.sp_cambiar_contrasena(integer, character varying, character varying) FROM fashionstore_app;
-EXCEPTION WHEN others THEN
-    RAISE NOTICE 'No se pudo revocar de fashionstore_app: %', SQLERRM;
-END $$;
-
--- ------------------------------------------------------------
--- PASO 3: Conceder EXECUTE solo al rol de plataforma/aprovisionamiento
---         fashionstore_app ya NO necesita este permiso (código actualizado)
---         fashionstore_provisioner sí lo necesita para restablecimiento administrativo
--- ------------------------------------------------------------
-DO $$
-BEGIN
-    GRANT EXECUTE ON PROCEDURE public.sp_cambiar_contrasena(integer, character varying, character varying) TO fashionstore_provisioner;
-EXCEPTION WHEN others THEN
-    RAISE NOTICE 'No se pudo conceder a fashionstore_provisioner: %', SQLERRM;
-END $$;
-
--- ------------------------------------------------------------
--- PASO 4: Verificación final (solo lectura)
--- ------------------------------------------------------------
-SELECT 'DESPUÉS - Permisos de sp_cambiar_contrasena:' AS info;
-SELECT grantee, privilege_type
-FROM information_schema.role_routine_grants
-WHERE routine_name = 'sp_cambiar_contrasena'
-ORDER BY grantee;
-
--- ------------------------------------------------------------
--- PASO 5: Verificación adicional: comprobar que el procedimiento existe
--- ------------------------------------------------------------
-SELECT routine_name, routine_type, security_invoker
-FROM information_schema.routines
-WHERE routine_name = 'sp_cambiar_contrasena';
-
--- ============================================================================
--- REVERSIÓN (solo si es necesario)
--- ============================================================================
--- GRANT EXECUTE ON PROCEDURE public.sp_cambiar_contrasena(integer, character varying, character varying) TO PUBLIC;
--- GRANT EXECUTE ON PROCEDURE public.sp_cambiar_contrasena(integer, character varying, character varying) TO anon;
--- GRANT EXECUTE ON PROCEDURE public.sp_cambiar_contrasena(integer, character varying, character varying) FROM authenticated;
--- GRANT EXECUTE ON PROCEDURE public.sp_cambiar_contrasena(integer, character varying, character varying) FROM service_role;
--- GRANT EXECUTE ON PROCEDURE public.sp_cambiar_contrasena(integer, character varying, character varying) TO fashionstore_app;
--- ============================================================================
+-- Recuperación segura ante un incidente posterior:
+--   1. Investigar y corregir la causa (por ejemplo, un despliegue antiguo).
+--   2. Si es imprescindible, conceder temporalmente EXECUTE SOLO al rol
+--      fashionstore_app dentro de una transacción supervisada.
+--   3. Repetir las verificaciones efectivas y retirar ese acceso al terminar.
+-- Nunca conceder EXECUTE a PUBLIC, anon, authenticated ni service_role.
