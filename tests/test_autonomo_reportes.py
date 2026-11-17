@@ -68,3 +68,69 @@ def test_untrusted_model_output_never_expands_query_capabilities(monkeypatch,cha
 def test_model_optional_unavailable_is_not_claimed_as_keyword_ai():
     with pytest.raises(DomainError) as error:interpreter.interpret('Ventas',[],enabled=False)
     assert error.value.status==503
+
+
+def test_interpreter_resolves_relative_months_and_periods_independently(monkeypatch):
+    monkeypatch.setattr(interpreter, '_model', interpreter._FallbackLocalInterpreter())
+    res = interpreter.interpret(
+        'Nuevo reporte de todas las ventas revisadas de todos los sucursales durante los últimos 3 meses, indicando cada prenda que fue vendida',
+        [],
+        enabled=True,
+    )
+    assert res['estado'] == 'listo'
+    assert res['plan']['tipo'] in ('productos_vendidos', 'ventas_sucursal')
+    ini = res['plan']['fechaIni']
+    fin = res['plan']['fechaFin']
+    assert ini is not None and fin is not None and ini < fin
+
+
+def test_interpreter_uses_resolved_relative_dates_even_if_llm_asks_for_dates(monkeypatch):
+    calls = []
+
+    class ReluctantThenReadyModel:
+        def create_chat_completion(self, *, messages, response_format, **kwargs):
+            calls.append(messages[0]['content'])
+            if len(calls) == 1:
+                payload = {
+                    'tipo': 'aclaracion', 'fechaIni': None, 'fechaFin': None,
+                    'nroSuc': None, 'limite': 10, 'umbral': 5,
+                    'mensaje': 'Indica las fechas inicial y final del período que deseas consultar.',
+                }
+            else:
+                payload = {
+                    'tipo': 'productos_vendidos', 'fechaIni': None, 'fechaFin': None,
+                    'nroSuc': None, 'limite': 10, 'umbral': 5,
+                    'mensaje': 'Prendas vendidas en los últimos 3 meses.',
+                }
+            return {'choices': [{'message': {'content': json.dumps(payload)}}]}
+
+    monkeypatch.setattr(interpreter, '_model', ReluctantThenReadyModel())
+    res = interpreter.interpret(
+        'Reporte de ventas de cada prenda durante los últimos 3 meses',
+        [],
+        enabled=True,
+    )
+    assert res['estado'] == 'listo'
+    assert res['plan']['tipo'] == 'productos_vendidos'
+    assert res['plan']['fechaIni'] is not None
+    assert res['plan']['fechaFin'] is not None
+    assert len(calls) == 2
+
+
+def test_interpreter_rejects_periods_longer_than_12_months(monkeypatch):
+    monkeypatch.setattr(interpreter, '_model', interpreter._FallbackLocalInterpreter())
+    res = interpreter.interpret('Ventas por sucursal de los últimos 18 meses', [], enabled=True)
+    assert res['estado'] == 'aclaracion'
+    assert '12 meses' in res['mensaje']
+
+
+def test_references_endpoint_exposes_ia_habilitada_per_plan(monkeypatch):
+    from app.modules.ventas_reportes.cu25_reportes.routers import dinamicos as router_dinamicos
+    monkeypatch.setattr(router_dinamicos.service, 'references', lambda db, actor: [{'nro': 1, 'nombre': 'Central'}])
+    monkeypatch.setattr(router_dinamicos.service, 'has_feature', lambda db, code='REPORTES': code == 'REPORTES')
+    res_basic = router_dinamicos.references(db=SimpleNamespace(), actor=('admin', None))
+    assert res_basic['iaHabilitada'] is False
+
+    monkeypatch.setattr(router_dinamicos.service, 'has_feature', lambda db, code='REPORTES': code in ('REPORTES', 'REPORTES_IA'))
+    res_pro = router_dinamicos.references(db=SimpleNamespace(), actor=('admin', None))
+    assert res_pro['iaHabilitada'] is True

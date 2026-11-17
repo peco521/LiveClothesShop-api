@@ -27,10 +27,15 @@ def tenant(db):
         raise DomainError(403, 'contexto_empresa_requerido', 'Se requiere una sesión empresarial')
     return value
 
+def has_feature(db, code='REPORTES') -> bool:
+    return db.scalar(
+        text('SELECT fn_tiene_funcionalidad(CAST(:tenant AS integer), CAST(:code AS varchar))'),
+        {'tenant': tenant(db), 'code': code},
+    ) is True
+
+
 def feature(db, code='REPORTES'):
-    allowed = db.scalar(text('SELECT fn_tiene_funcionalidad(CAST(:tenant AS integer), CAST(:code AS varchar))'),
-                        {'tenant': tenant(db), 'code': code})
-    if allowed is not True:
+    if not has_feature(db, code):
         raise DomainError(403, 'funcionalidad_no_habilitada', 'El plan vigente no incluye esta funcionalidad')
 
 def actor_scope(db, identity):

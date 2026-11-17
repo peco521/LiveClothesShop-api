@@ -320,9 +320,12 @@ def company_subscription_summary(db, credential, access_tokens) -> MiSuscripcion
         return None
     funcionalidades: list[str] = []
     if row["idPlan"] is not None:
-        funcionalidades = list(db.scalars(text(
-            "SELECT codigo FROM plan_funcionalidad WHERE idplan = :idplan ORDER BY codigo"
-        ), {"idplan": row["idPlan"]}))
+        funcionalidades = list(db.scalars(text("""
+            SELECT f.codigo
+            FROM funcionalidad_saas f
+            WHERE fn_tiene_funcionalidad(:idemp, f.codigo) IS TRUE
+            ORDER BY f.codigo
+        """), {"idemp": access.idemp}))
     return MiSuscripcionResponse(
         empresaCodigo=row["empresaCodigo"],
         empresaNombre=row["empresaNombre"],

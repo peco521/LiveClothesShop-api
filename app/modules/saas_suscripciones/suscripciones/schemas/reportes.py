@@ -1,15 +1,18 @@
 from datetime import date
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.modules.ventas_reportes.cu25_reportes.schemas.dinamicos import ReportPlan
 
+PositiveInt = Annotated[int, Field(ge=1, strict=True)]
+
 
 class SaasReportScope(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    idEmp: int | None = Field(default=None, ge=1, strict=True)
-    idPlan: int | None = Field(default=None, ge=1, strict=True)
+    idEmp: PositiveInt | None = None
+    idEmps: list[PositiveInt] | None = Field(default=None, min_length=1, max_length=100)
+    idPlan: PositiveInt | None = None
 
 
 class SaasVoiceInterpretRequest(SaasReportScope):

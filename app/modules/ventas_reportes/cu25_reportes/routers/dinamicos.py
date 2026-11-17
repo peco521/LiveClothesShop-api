@@ -17,7 +17,11 @@ def authorized(request: Request, identity=Depends(require_permission('CU25')), d
 
 @router.get('/dinamicos/referencias')
 def references(db=Depends(get_db), actor=Depends(authorized)):
-    return {'sucursales':service.references(db,actor),'tipos':service.TITLES}
+    return {
+        'sucursales': service.references(db, actor),
+        'tipos': service.TITLES,
+        'iaHabilitada': service.has_feature(db, 'REPORTES_IA'),
+    }
 
 @router.post('/dinamicos/ejecutar')
 def execute(plan: ReportPlan, request: Request, db=Depends(get_db), actor=Depends(authorized)):

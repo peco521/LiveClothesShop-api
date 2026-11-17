@@ -20,8 +20,8 @@ router = APIRouter(prefix="/api/saas/reportes", tags=["Reportes SaaS"])
 EMPRESAS = "SAAS-EMPRESAS"
 
 
-def _companies(db, idEmp=None, idPlan=None):
-    return reportes.empresas_con_suscripcion(db, idemp=idEmp, idplan=idPlan)
+def _companies(db, idEmp=None, idPlan=None, idEmps=None):
+    return reportes.empresas_con_suscripcion(db, idemp=idEmp, idemps=idEmps, idplan=idPlan)
 
 
 def _validate_local_filters(companies, nroSuc, idCat, idTemp):
@@ -46,12 +46,14 @@ def empresas(db: Session = Depends(get_platform_db),
 
 @router.get("/dashboard")
 def dashboard(fechaIni: date, fechaFin: date, request: Request,
-              idEmp: int | None = Query(None, ge=1), idPlan: int | None = Query(None, ge=1),
+              idEmp: int | None = Query(None, ge=1),
+              idEmps: list[int] | None = Query(None),
+              idPlan: int | None = Query(None, ge=1),
               nroSuc: int | None = Query(None, ge=1), idCat: int | None = Query(None, ge=1),
               idTemp: int | None = Query(None, ge=1),
               db: Session = Depends(get_platform_db),
               identity=Depends(require_platform_permission(EMPRESAS))):
-    selected = _companies(db, idEmp, idPlan)
+    selected = _companies(db, idEmp, idPlan, idEmps=idEmps)
     _validate_local_filters(selected, nroSuc, idCat, idTemp)
     return reportes.dashboard(request, selected, fechaIni, fechaFin, nro_suc=nroSuc,
                               id_cat=idCat, id_temp=idTemp,
@@ -61,18 +63,19 @@ def dashboard(fechaIni: date, fechaFin: date, request: Request,
 @router.get("/exportar")
 def exportar(tipo: Literal["ventas", "inventario", "reservas", "devoluciones"],
              formato: Literal["pdf", "xlsx"], fechaIni: date, fechaFin: date, request: Request,
-             idEmp: int | None = Query(None, ge=1), idPlan: int | None = Query(None, ge=1),
+             idEmp: int | None = Query(None, ge=1),
+             idEmps: list[int] | None = Query(None),
+             idPlan: int | None = Query(None, ge=1),
              nroSuc: int | None = Query(None, ge=1), idCat: int | None = Query(None, ge=1),
              idTemp: int | None = Query(None, ge=1),
              db: Session = Depends(get_platform_db),
              identity=Depends(require_platform_permission(EMPRESAS))):
-    selected = _companies(db, idEmp, idPlan)
+    selected = _companies(db, idEmp, idPlan, idEmps=idEmps)
     _validate_local_filters(selected, nroSuc, idCat, idTemp)
     content, media, filename = reportes.exportar(
         request, selected, fecha_ini=fechaIni, fecha_fin=fechaFin,
         tipo=tipo, formato=formato, nro_suc=nroSuc, id_cat=idCat, id_temp=idTemp,
-        zone=request.app.state.settings.reportes_zona_horaria,
-        force_archive=idEmp is None)
+        zone=request.app.state.settings.reportes_zona_horaria)
     return Response(content, media_type=media,
                     headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
@@ -81,9 +84,12 @@ def exportar(tipo: Literal["ventas", "inventario", "reservas", "devoluciones"],
 def interpretar(data: SaasVoiceInterpretRequest, request: Request,
                 db: Session = Depends(get_platform_db),
                 identity=Depends(require_platform_permission(EMPRESAS))):
-    selected = _companies(db, data.idEmp, data.idPlan)
+    all_companies = _companies(db)
+    selected = _companies(db, data.idEmp, data.idPlan, idEmps=data.idEmps)
+    explicit_scope = data.idEmp is not None or data.idEmps is not None or data.idPlan is not None
     return reportes.interpretar_voz(request, selected, data.texto,
-                                    ia_enabled=request.app.state.settings.reportes_ia_local_enabled)
+                                    ia_enabled=request.app.state.settings.reportes_ia_local_enabled,
+                                    all_companies=all_companies, explicit_scope=explicit_scope)
 
 
 @router.get("/referencias")
@@ -103,7 +109,7 @@ def referencias(request: Request, idEmp: int | None = Query(None, ge=1),
 def ejecutar_dinamico(data: SaasVoiceExecutionRequest, request: Request,
                       db: Session = Depends(get_platform_db),
                       identity=Depends(require_platform_permission(EMPRESAS))):
-    selected = _companies(db, data.idEmp, data.idPlan)
+    selected = _companies(db, data.idEmp, data.idPlan, idEmps=data.idEmps)
     actor = (identity.usuario.idUsuario, None)
     return reportes.ejecutar_voz(request, selected, data.plan, actor=actor,
                                  zone=request.app.state.settings.reportes_zona_horaria)
@@ -113,7 +119,7 @@ def ejecutar_dinamico(data: SaasVoiceExecutionRequest, request: Request,
 def exportar_dinamico(data: SaasVoiceExportRequest, request: Request,
                       db: Session = Depends(get_platform_db),
                       identity=Depends(require_platform_permission(EMPRESAS))):
-    selected = _companies(db, data.idEmp, data.idPlan)
+    selected = _companies(db, data.idEmp, data.idPlan, idEmps=data.idEmps)
     content, media, filename = reportes.exportar_voz(
         request, selected, data.plan, actor=(identity.usuario.idUsuario, None),
         formato=data.formato, zone=request.app.state.settings.reportes_zona_horaria)
@@ -143,7 +149,7 @@ def predecir_saas(input: PredictionRequest,
 def ejecutar_voz(data: SaasVoiceExecutionRequest, request: Request,
                  db: Session = Depends(get_platform_db),
                  identity=Depends(require_platform_permission(EMPRESAS))):
-    selected = _companies(db, data.idEmp, data.idPlan)
+    selected = _companies(db, data.idEmp, data.idPlan, idEmps=data.idEmps)
     actor = (identity.usuario.idUsuario, None)
     return reportes.ejecutar_voz(request, selected, data.plan, actor=actor,
                                  zone=request.app.state.settings.reportes_zona_horaria)
@@ -153,7 +159,7 @@ def ejecutar_voz(data: SaasVoiceExecutionRequest, request: Request,
 def exportar_voz(data: SaasVoiceExportRequest, request: Request,
                  db: Session = Depends(get_platform_db),
                  identity=Depends(require_platform_permission(EMPRESAS))):
-    selected = _companies(db, data.idEmp, data.idPlan)
+    selected = _companies(db, data.idEmp, data.idPlan, idEmps=data.idEmps)
     content, media, filename = reportes.exportar_voz(
         request, selected, data.plan, actor=(identity.usuario.idUsuario, None),
         formato=data.formato, zone=request.app.state.settings.reportes_zona_horaria)
